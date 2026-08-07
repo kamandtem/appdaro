@@ -16,7 +16,26 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // یک debug.keystore ثابت (کامیت‌شده در همین ریپو، در android/app/debug.keystore)
+    // به‌جای اینکه هر بار Gradle یکی تصادفی/محلی بسازد. بدون این، هر بار که
+    // GitHub Actions روی یک ماشین تازه build می‌کند، یک کلید امضای متفاوت
+    // تولید می‌شود — یعنی APK هر run با APK run قبلی امضای متفاوت دارد و
+    // اندروید نصبِ آن روی نسخه‌ی قبلاً نصب‌شده را رد می‌کند («App not installed»)،
+    // مگر اینکه اپ قدیمی اول حذف شود (و دیتای محلی‌اش هم از بین برود). با یک
+    // کلید ثابت، APKهای همه‌ی buildها همیشه هم‌امضا می‌مانند و به‌صورت آپدیت
+    // (بدون حذف دیتا) روی نسخه‌ی قبلی نصب می‌شوند.
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

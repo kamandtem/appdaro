@@ -1,0 +1,25 @@
+# وابستگی‌ها و خروجی build — همیشه توسط CI/لوکال از نو ساخته می‌شوند
+node_modules/
+dist/
+build/
+
+# فایل‌های محیط لوکال (هیچ‌کدام نباید در ریپوی مشترک باشند)
+.env
+.env.local
+*.log
+
+# خروجی build اندروید — فقط artifactهای gradle، نه سورس پروژه‌ی android
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+android/*.iml
+android/.idea/
+
+# نکته‌ی مهم: android/app/debug.keystore عمداً اینجا نیامده و نباید اضافه شود —
+# باید در ریپو کامیت بماند، وگرنه هر build گیت‌هاب یک کلید امضای متفاوت
+# می‌سازد و APKهای پیاپی روی هم آپدیت نمی‌شوند (نگاه کن به کامنت بالای
+# signingConfigs در android/app/build.gradle).
+
+.DS_Store
