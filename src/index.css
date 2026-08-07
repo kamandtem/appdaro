@@ -1,0 +1,120 @@
+@import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+@import "tailwindcss";
+
+/* Tailwind v4 defaults `dark:` to the OS-level `prefers-color-scheme` media query.
+   This app toggles a `.dark` class on <html> instead (see App.tsx), so without this
+   override every `dark:` utility in the app is ignored and the day/night switch in
+   the profile drawer visually does nothing. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    direction: rtl;
+    text-align: right;
+    background-color: #f8fafc;
+    color: #0f172a;
+    overflow-x: hidden;
+  }
+
+  .dark body {
+    background-color: #0b0f19;
+    color: #f1f5f9;
+  }
+}
+
+/* Custom glassmorphism and card stack classes */
+.glass-card {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.dark .glass-card {
+  background: rgba(17, 24, 39, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-nav {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(226, 232, 240, 0.8);
+}
+
+.dark .glass-nav {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(51, 65, 85, 0.5);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+/* Pulse glow for health indicators */
+@keyframes pulse-glow {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.05); opacity: 1; }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s infinite ease-in-out;
+}
+
+/* Slow ping — همان جلوه‌ی حلقه‌ی باز/محوشونده‌ی animate-ping پیش‌فرض تیلویند،
+   اما به‌جای تکرار پیوسته و سریع، فقط یک‌بار در هر چرخه (هر ۱۰ ثانیه) چشمک
+   می‌زند: بیشتر زمان بی‌حرکت و نامرئی می‌ماند و فقط در انتهای چرخه یک ضربان
+   سریع نشان می‌دهد. برای دکمه‌ی شناور «افزودن دارو» استفاده می‌شود. */
+@keyframes slow-ping {
+  0%, 80% { transform: scale(1); opacity: 0; }
+  85% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+.animate-slow-ping {
+  animation: slow-ping 10s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Recharts draws a focus/selection outline (an orange box) around its SVG when the
+   chart gains focus after a tap — disabled per-chart via `accessibilityLayer={false}`,
+   this is just a safety net so no stray outline can ever show through. */
+.recharts-wrapper:focus,
+.recharts-wrapper *:focus,
+.recharts-surface:focus,
+.recharts-surface:focus-visible {
+  outline: none !important;
+}
+
+/* Onboarding illustrations (inlined SVGs) — scale to fill their container
+   regardless of the intrinsic width/height baked into the source SVG. */
+.onboarding-illustration {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.onboarding-illustration svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+

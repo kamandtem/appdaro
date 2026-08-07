@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">داروتو</string>
+    <string name="title_activity_main">داروتو</string>
+    <string name="package_name">com.darooto.app</string>
+    <string name="custom_url_scheme">com.darooto.app</string>
+</resources>
