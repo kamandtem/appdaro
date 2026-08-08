@@ -7,6 +7,8 @@
 // receiver واقعی در لایه‌ی native وصل شود»)؛ اینجا فقط قلاب (hook) سمت
 // JS/TS آماده است تا وقتی آن بخش native اضافه شد، بلافاصله wire شود.
 
+import { App as CapacitorApp } from '@capacitor/app';
+
 export interface AppLifecycleAdapter {
   onResume(cb: () => void): Promise<() => void>;
   /** Placeholder برای اتصال به BOOT_COMPLETED واقعی (بخش ۱۶) — امروز فقط
@@ -17,7 +19,6 @@ export interface AppLifecycleAdapter {
 export class CapacitorAppLifecycleAdapter implements AppLifecycleAdapter {
   async onResume(cb: () => void): Promise<() => void> {
     try {
-      const { App: CapacitorApp } = await import('@capacitor/app');
       const handle = await CapacitorApp.addListener('resume', cb);
       return () => handle.remove();
     } catch (e) {

@@ -46,6 +46,7 @@
     <!-- Android 12+: without this, scheduled dose-time alarms silently become
          inexact (can drift by many minutes) — medication reminders must not drift. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- Explicit even though most devices grant it by default; needed for the
          vibration pattern on the reminder notification channel. -->

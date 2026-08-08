@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { App as CapacitorApp } from '@capacitor/app';
 import { AppState, Medication, NavigationTab, FontSize, SkipReason, DoseOccurrence } from './types';
 import { loadAppState, saveAppState } from './services/storageService';
 import { Header } from './components/common/Header';
@@ -625,7 +626,6 @@ export default function App() {
 
     (async () => {
       try {
-        const { App: CapacitorApp } = await import('@capacitor/app');
         const handle = await CapacitorApp.addListener('backButton', () => {
           handleBackButton();
         });
@@ -648,7 +648,6 @@ export default function App() {
 
   const handleConfirmExit = async () => {
     try {
-      const { App: CapacitorApp } = await import('@capacitor/app');
       CapacitorApp.exitApp();
     } catch (e) {
       // Not on native platform — just close the dialog.
