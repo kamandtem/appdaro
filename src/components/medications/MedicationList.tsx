@@ -3,7 +3,13 @@ import { Medication, MedicationForm } from '../../types';
 import { toPersianNumbers } from '../../utils/persian';
 import { Pill, Droplet, Syringe, Pipette, Bandage, AlertTriangle, Plus, Trash2, Pencil, CheckCircle, Search, Filter, Clock, X, ShieldAlert, PackageX, ChevronDown } from 'lucide-react';
 import { MedicationInteractionCheckModal } from './MedicationInteractionCheckModal';
-import { parseTimeToMinutes } from '../../utils/doseSchedule';
+import { toEnglishNumbers } from '../../utils/persian';
+
+const parseTimeToMinutes = (time: string): number | null => {
+  const [hour, minute] = toEnglishNumbers(time).split(':').map(Number);
+  if (!Number.isFinite(hour)) return null;
+  return hour * 60 + (Number.isFinite(minute) ? minute : 0);
+};
 
 interface MedicationListProps {
   medications: Medication[];

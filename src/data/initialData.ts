@@ -1,4 +1,4 @@
-import { FamilyMember, Medication, DoseLog, DoseOccurrence, OnboardingSlide, AndroidProjectFile } from '../types';
+import { FamilyMember, Medication, DoseLog, OnboardingSlide, AndroidProjectFile } from '../types';
 
 export const INITIAL_FAMILY_MEMBERS: FamilyMember[] = [
   {
@@ -46,11 +46,6 @@ export const INITIAL_FAMILY_MEMBERS: FamilyMember[] = [
 export const INITIAL_MEDICATIONS: Medication[] = [];
 
 export const INITIAL_DOSE_LOGS: DoseLog[] = [];
-
-// بخش ۱ و ۸ سند — occurrenceهای seed اولیه؛ چون کاربر تازه هنوز دارویی ثبت
-// نکرده، این آرایه هم مثل INITIAL_MEDICATIONS/INITIAL_DOSE_LOGS خالی است —
-// اولین occurrenceها را OccurrenceGenerator بعد از افزودن اولین دارو می‌سازد.
-export const INITIAL_DOSE_OCCURRENCES: DoseOccurrence[] = [];
 
 export const ONBOARDING_SLIDES: OnboardingSlide[] = [
   {

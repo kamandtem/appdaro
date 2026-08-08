@@ -1,214 +1,224 @@
-// CapacitorNotificationAdapter — بخش ۹ سند طراحی.
+// NotificationAdapter (DESIGN.md بخش ۹) — جداکردن هر چیز platform-specific
+// نوتیفیکیشن از Notification Engine (بخش ۶). امروز `NotificationEngine/CapacitorNotificationAdapter`
+// مستقیماً `import('@capacitor/local-notifications')` می‌کند و در همان فایل
+// هم منطق زمان‌بندی هست هم منطق پلاگین — این دو باید جدا شوند (بخش ۹، بخش
+// ۱۳ - جدول فایل‌ها: «تفکیک به src/notification/NotificationEngine.ts
+// (منطق) + src/adapters/CapacitorNotificationAdapter.ts (پلاگین)»).
 //
-// تنها نقطه‌ای که مستقیماً با پلاگین @capacitor/local-notifications صحبت
-// می‌کند. NotificationEngine (منطق) از این آداپتر استفاده می‌کند و خودش هیچ
-// import مستقیمی از پلاگین ندارد — جدایی «منطق» از «پلاگین» طبق جدول بخش ۱۳.
-//
-// نکته‌ی مهم: قبلاً پلاگین با import() پویا (داخل یک تابع، هنگام نیاز) لود
-// می‌شد. توی WebView اندرویدِ Capacitor این import پویا می‌تونه به‌جای resolve
-// یا reject شدن، برای همیشه معلق (pending) بمونه — که دقیقاً همون چیزی بود که
-// باعث می‌شد دکمه‌ی «تست نوتیفیکیشن» فقط لودینگ نشون بده و هیچ‌وقت جواب نده.
-// حالا مثل پروژه‌ی دیگه‌ای که واقعاً نوتیفیکیشنش کار می‌کنه، پلاگین را از همون
-// ابتدای فایل و به‌صورت static import می‌گیریم.
+// این فایل عمداً به NotificationEngine/CapacitorNotificationAdapter فعلی دست نمی‌زنه — طبق همون
+// الگوی shadow-mode که بقیه‌ی Adapter/Repository/Domain layerها تا الان
+// داشتن (تیکه‌های ۱ تا ۷)، این مسیر جدید کنار مسیر قدیمی زندگی می‌کنه.
+// اتصال واقعی (جایگزینی) پشت یک feature flag انجام می‌شه — نگاه کن به
+// src/notification/NotificationEngine.ts.
 
-import { LocalNotifications } from '@capacitor/local-notifications';
+import { NativeNotificationId, ReminderKind } from '../types';
 import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
-export interface ScheduledNotificationSpec {
-  id: number;
+/** یک entry آماده‌ی زمان‌بندی — دقیقاً هم‌راستا با امضای خام بخش ۹
+ *  (`schedule(entries: {id; title; body; fireAt; extra}[])`)، با این تفاوت
+ *  که `extra` طبق بخش ۱۶ («چند Notification») حتماً `occurrenceId` و `kind`
+ *  واقعی حمل می‌کند — نه یک هش رشته‌ای حدسی مثل کد قدیمی. */
+export interface NotificationScheduleEntry {
+  id: NativeNotificationId;
   title: string;
   body: string;
-  at?: Date;
-  repeatDaily?: { hour: number; minute: number };
-  extra?: Record<string, unknown>;
+  fireAt: number;
+  extra: { occurrenceId: string; kind: ReminderKind };
 }
 
+/**
+ * NotificationAdapter — امضای دقیق بخش ۹.
+ *
+ * **انحراف مستندشده (نسبت به جدول توصیفی بخش ۶):** بخش ۶ در جدول «تفاوت
+ * کلیدی با امروز» می‌گوید شناسه‌ی نوتیفیکیشن «id واقعی‌ای که خود پلاگین OS
+ * برمی‌گرداند» است — ولی امضای خودِ این interface (بخش ۹) `id` را به‌عنوان
+ * *ورودی* `schedule()` می‌گیرد، نه خروجی. این با API واقعی
+ * `@capacitor/local-notifications` هم‌خوانی دارد: آن پلاگین همیشه یک id
+ * عددی از طرف caller می‌خواهد و چیزی تولید/برنمی‌گرداند. پس تولید id واقعاً
+ * به عهده‌ی خود Notification Engine (caller) است — نه OS و نه این Adapter؛
+ * بخش ۶ فقط این نکته را توصیف می‌کند که (بر خلاف کد قدیمی) این id دیگر یک
+ * هش حدسی از `medId+slot+kind` نیست، بلکه از خودِ `occurrenceId` (که واقعاً
+ * منحصربه‌فرده) مشتق می‌شود — نگاه کن به `NotificationEngine.ts`.
+ */
+export interface NotificationAdapter {
+  ensureChannel(): Promise<void>;
+  schedule(entries: NotificationScheduleEntry[]): Promise<void>;
+  cancel(ids: NativeNotificationId[]): Promise<void>;
+  onTap(cb: (event: { occurrenceId: string; actionId?: string }) => void): () => void;
+}
+
+// همون شناسه‌ی کانال قدیمی (NotificationEngine/CapacitorNotificationAdapter) — عمداً عوض نشده، چون
+// این فقط یک id داخلی برای OS است و تغییرش هیچ سودی نداره، فقط ریسک از دست
+// دادن تنظیمات صدا/ویبره‌ی از‌قبل‌اعطاشده‌ی کاربر رو داره.
 const CHANNEL_ID = 'daroto-dose-reminders';
 
-/** سقف زمانی امن برای هر تماس با پلاگین — اگر پلاگین به هر دلیلی (باگ
- *  نسخه، تداخل، هرچی) هیچ‌وقت جواب نده، دیگه UI برای همیشه چرخ‌وفلک لودینگ
- *  نشون نمی‌ده؛ بعد از این مهلت با یه خطای صریح شکست می‌خوریم. */
-const PLUGIN_CALL_TIMEOUT_MS = 8000;
+/** Lazily resolves the native plugin. Returns null when not running inside a
+ *  Capacitor native shell (e.g. plain browser preview) — دقیقاً همون الگوی
+ *  `getPlugin` قدیمی NotificationEngine/CapacitorNotificationAdapter. */
+const PLUGIN_TIMEOUT_MS = 8_000;
 
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+function withPluginTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
   return Promise.race([
     promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`«${label}» بیش از ${PLUGIN_CALL_TIMEOUT_MS / 1000} ثانیه جواب نداد (timeout)`)), PLUGIN_CALL_TIMEOUT_MS)
-    )
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${PLUGIN_TIMEOUT_MS}ms`)), PLUGIN_TIMEOUT_MS))
   ]);
 }
 
-/** نتیجه‌ی صریح درخواست مجوز — دیگر «void» نیست، چون خودِ App.tsx/UI باید
- *  بتواند به کاربر نشان دهد که آیا واقعاً مجوز گرفته شده یا نه (به‌جای اینکه
- *  فقط توی کنسول یک warning بی‌صدا بماند که کاربر هیچ‌وقت نمی‌بیند). */
-export interface NotificationPermissionStatus {
-  /** آیا اصلاً روی این پلتفرم پلاگین native در دسترس است؟ false یعنی احتمالاً
-   *  داریم روی وب/پیش‌نمایش اجرا می‌شویم، نه اپ نصب‌شده روی گوشی. */
-  pluginAvailable: boolean;
-  /** مجوز نمایش نوتیفیکیشن (POST_NOTIFICATIONS در اندروید ۱۳+). */
-  notificationsGranted: boolean;
-  /** مجوز هشدار دقیق (SCHEDULE_EXACT_ALARM در اندروید ۱۲+) — اگر این نه باشد
-   *  نوتیفیکیشن‌ها ممکن است دیر/نامنظم برسند، نه اینکه اصلاً نرسند. */
-  exactAlarmGranted: boolean;
-  /** آخرین خطای واقعی (اگر چیزی شکست خورد) — برای نمایش/لاگ دقیق‌تر. */
-  lastError?: string;
+function getPlugin() {
+  return Capacitor.isNativePlatform() ? LocalNotifications : null;
 }
 
-export interface NotificationAdapter {
-  isAvailable(): Promise<boolean>;
-  requestPermissions(): Promise<NotificationPermissionStatus>;
-  checkPermissionStatus(): Promise<NotificationPermissionStatus>;
-  schedule(specs: ScheduledNotificationSpec[]): Promise<{ ok: boolean; error?: string }>;
-  cancel(ids: number[]): Promise<void>;
-  addTapListener(onTap: (extra: Record<string, unknown>) => void): Promise<(() => void) | undefined>;
-}
 
+/**
+ * پیاده‌سازی واقعی، برای اجرا روی device — دقیقاً پشت
+ * `@capacitor/local-notifications`.
+ */
 export class CapacitorNotificationAdapter implements NotificationAdapter {
-  async isAvailable(): Promise<boolean> {
-    return Capacitor.isNativePlatform();
-  }
+  private channelEnsured = false;
 
-  async checkPermissionStatus(): Promise<NotificationPermissionStatus> {
-    if (!Capacitor.isNativePlatform()) {
-      return { pluginAvailable: false, notificationsGranted: false, exactAlarmGranted: false };
-    }
-    let notificationsGranted = false;
-    let exactAlarmGranted = true; // اگر API موجود نباشد فرض می‌کنیم مشکلی نیست
-    let lastError: string | undefined;
+  async ensureChannel(): Promise<void> {
+    // Idempotent در همون session — دیگه لازم نیست هر syncOccurrence دوباره
+    // پلاگین رو صدا بزنه؛ createChannel خودش هم توی OS idempotent هست، ولی
+    // این کش یک round-trip غیرلازم به پلاگین رو هم حذف می‌کنه.
+    if (this.channelEnsured) return;
+    const plugin = await getPlugin();
+    if (!plugin) return;
     try {
-      const perm = await withTimeout(LocalNotifications.checkPermissions(), 'checkPermissions');
-      notificationsGranted = perm?.display === 'granted';
-    } catch (e) {
-      lastError = String(e);
-      console.error('[Notifications] checkPermissions شکست خورد:', e);
-    }
-    try {
-      if (typeof LocalNotifications.checkExactNotificationSetting === 'function') {
-        const exact = await withTimeout(LocalNotifications.checkExactNotificationSetting(), 'checkExactNotificationSetting');
-        exactAlarmGranted = !exact?.exact_alarm || exact.exact_alarm === 'granted';
-      }
-    } catch (e) {
-      lastError = String(e);
-      console.error('[Notifications] checkExactNotificationSetting شکست خورد:', e);
-    }
-    return { pluginAvailable: true, notificationsGranted, exactAlarmGranted, lastError };
-  }
-
-  async requestPermissions(): Promise<NotificationPermissionStatus> {
-    if (!Capacitor.isNativePlatform()) {
-      try {
-        if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-          await Notification.requestPermission();
-        }
-      } catch (e) {
-        console.error('[Notifications] درخواست مجوز نوتیفیکیشن وب شکست خورد:', e);
-      }
-      return { pluginAvailable: false, notificationsGranted: false, exactAlarmGranted: false };
-    }
-
-    let notificationsGranted = false;
-    let lastError: string | undefined;
-
-    try {
-      const result = await withTimeout(LocalNotifications.requestPermissions(), 'requestPermissions');
-      notificationsGranted = result?.display === 'granted';
-      // مهم: اینجا دیگه فقط warn نمی‌کنیم — اگر کاربر رد کرده باشد، این
-      // اطلاعات باید به لایه‌ی بالاتر (UI) برگردد تا نمایش داده شود.
-      if (!notificationsGranted) {
-        console.error('[Notifications] کاربر مجوز نوتیفیکیشن را رد کرده یا داده نشده. نتیجه:', result);
-      }
-    } catch (e) {
-      lastError = String(e);
-      console.error('[Notifications] requestPermissions() شکست خورد یا timeout شد:', e);
-    }
-
-    try {
-      await withTimeout(LocalNotifications.createChannel({
+      await withPluginTimeout(plugin.createChannel({
         id: CHANNEL_ID,
         name: 'یادآور مصرف دارو',
         description: 'یادآورهای وقت مصرف دارو و یادآورهای دوز فراموش‌شده',
-        importance: 5,
-        visibility: 1,
+        importance: 5, // IMPORTANCE_HIGH — heads-up + صدا
+        visibility: 1, // public
         vibration: true,
         lights: true
       }), 'createChannel');
+      this.channelEnsured = true;
     } catch (e) {
-      lastError = String(e);
-      console.error('[Notifications] ساخت کانال نوتیفیکیشن شکست خورد:', e);
+      console.warn('CapacitorNotificationAdapter: failed to ensure channel:', e);
+      throw e;
     }
-
-    let exactAlarmGranted = true;
-    try {
-      if (typeof LocalNotifications.checkExactNotificationSetting === 'function') {
-        const exact = await withTimeout(LocalNotifications.checkExactNotificationSetting(), 'checkExactNotificationSetting');
-        if (exact?.exact_alarm && exact.exact_alarm !== 'granted' && typeof LocalNotifications.changeExactNotificationSetting === 'function') {
-          await withTimeout(LocalNotifications.changeExactNotificationSetting(), 'changeExactNotificationSetting');
-          const recheck = await withTimeout(LocalNotifications.checkExactNotificationSetting(), 'checkExactNotificationSetting');
-          exactAlarmGranted = !recheck?.exact_alarm || recheck.exact_alarm === 'granted';
-        }
-      }
-    } catch (e) {
-      lastError = String(e);
-      exactAlarmGranted = false;
-      console.error('[Notifications] بررسی/درخواست مجوز هشدار دقیق شکست خورد:', e);
-    }
-
-    return { pluginAvailable: true, notificationsGranted, exactAlarmGranted, lastError };
   }
 
-  async schedule(specs: ScheduledNotificationSpec[]): Promise<{ ok: boolean; error?: string }> {
-    if (specs.length === 0) return { ok: true };
-    if (!Capacitor.isNativePlatform()) {
-      const error = 'پلاگین نوتیفیکیشن native در دسترس نیست (احتمالاً در حال اجرا روی وب/پیش‌نمایش هستیم، نه اپ نصب‌شده)';
-      console.error('[Notifications]', error);
-      return { ok: false, error };
-    }
+  async schedule(entries: NotificationScheduleEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const plugin = await getPlugin();
+    if (!plugin) return;
     try {
-      await withTimeout(LocalNotifications.schedule({
-        notifications: specs.map(s => ({
-          id: s.id,
-          title: s.title,
-          body: s.body,
+      await withPluginTimeout(plugin.schedule({
+        notifications: entries.map(e => ({
+          id: toNumericId(e.id),
+          title: e.title,
+          body: e.body,
+          schedule: { at: new Date(e.fireAt), allowWhileIdle: true },
           channelId: CHANNEL_ID,
-          extra: s.extra,
-          schedule: s.repeatDaily
-            ? { on: { hour: s.repeatDaily.hour, minute: s.repeatDaily.minute }, allowWhileIdle: true }
-            : { at: s.at, allowWhileIdle: true }
+          extra: e.extra,
+          actionTypeId: 'DOSE_ACTIONS'
         }))
       }), 'schedule');
-      return { ok: true };
     } catch (e) {
-      // قبلاً اینجا فقط console.warn می‌شد و خطا کاملاً بی‌صدا گم می‌شد —
-      // همان دلیلی که کاربر هیچ نوتیفیکیشنی نمی‌دید و هیچ سرنخی هم نداشت.
-      const error = String(e);
-      console.error('[Notifications] schedule() شکست خورد یا timeout شد:', e);
-      return { ok: false, error };
+      console.warn('CapacitorNotificationAdapter: schedule failed:', e);
+      throw e;
     }
   }
 
-  async cancel(ids: number[]): Promise<void> {
+  async cancel(ids: NativeNotificationId[]): Promise<void> {
     if (ids.length === 0) return;
-    if (!Capacitor.isNativePlatform()) return;
+    const plugin = await getPlugin();
+    if (!plugin) return;
     try {
-      await withTimeout(LocalNotifications.cancel({ notifications: ids.map(id => ({ id })) }), 'cancel');
+      await withPluginTimeout(plugin.cancel({ notifications: ids.map(id => ({ id: toNumericId(id) })) }), 'cancel');
     } catch (e) {
-      console.warn('Failed to cancel notifications:', e);
+      console.warn('CapacitorNotificationAdapter: cancel failed:', e);
+      throw e;
     }
   }
 
-  async addTapListener(onTap: (extra: Record<string, unknown>) => void): Promise<(() => void) | undefined> {
-    if (!Capacitor.isNativePlatform()) return undefined;
-    try {
-      const handle = await LocalNotifications.addListener('localNotificationActionPerformed', (action: any) => {
-        if (action?.notification?.extra) onTap(action.notification.extra);
-      });
-      return () => handle.remove();
-    } catch (e) {
-      console.warn('Unable to register local notification tap listener:', e);
-      return undefined;
-    }
+  onTap(cb: (event: { occurrenceId: string; actionId?: string }) => void): () => void {
+    let handle: { remove: () => void } | undefined;
+    let cancelled = false;
+
+    (async () => {
+      const plugin = await getPlugin();
+      if (!plugin) return;
+      try {
+        const h = await plugin.addListener('localNotificationActionPerformed', (action: any) => {
+          const occurrenceId = action?.notification?.extra?.occurrenceId;
+          if (occurrenceId) cb({ occurrenceId, actionId: action?.actionId });
+        });
+        if (cancelled) {
+          h.remove();
+        } else {
+          handle = h;
+        }
+      } catch (e) {
+        console.warn('CapacitorNotificationAdapter: failed to register tap listener:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      handle?.remove();
+    };
   }
 }
 
-export const notificationAdapter: NotificationAdapter = new CapacitorNotificationAdapter();
+/**
+ * پیاده‌سازی تستی — کاملاً در حافظه، بدون هیچ import دینامیک واقعی؛ دقیقاً
+ * همون الگوی `FakeClockAdapter`/`FakeAppLifecycleAdapter` (تیکه ۴).
+ */
+export class FakeNotificationAdapter implements NotificationAdapter {
+  public channelEnsured = false;
+  public scheduled: NotificationScheduleEntry[] = [];
+  public canceled: NativeNotificationId[] = [];
+  private tapListeners: Set<(extra: { occurrenceId: string; actionId?: string }) => void> = new Set();
+
+  async ensureChannel(): Promise<void> {
+    this.channelEnsured = true;
+  }
+
+  async schedule(entries: NotificationScheduleEntry[]): Promise<void> {
+    this.scheduled.push(...entries);
+  }
+
+  async cancel(ids: NativeNotificationId[]): Promise<void> {
+    this.canceled.push(...ids);
+  }
+
+  onTap(cb: (event: { occurrenceId: string; actionId?: string }) => void): () => void {
+    this.tapListeners.add(cb);
+    return () => this.tapListeners.delete(cb);
+  }
+
+  /** برای تست: شبیه‌سازی تپ کاربر روی یک نوتیفیکیشن. */
+  simulateTap(occurrenceId: string, actionId?: string): void {
+    for (const cb of this.tapListeners) cb({ occurrenceId, actionId });
+  }
+}
+
+/** مجوزها و listener تپ هم بخشی از adapter هستند؛ منطق زمان‌بندی دیگر در
+ * `services/NotificationEngine/CapacitorNotificationAdapter` پخش نشده است. */
+export async function requestNotificationPermissions(): Promise<void> {
+  try {
+    const plugin = await getPlugin();
+    if (!plugin) return;
+    await withPluginTimeout(plugin.requestPermissions(), 'requestPermissions');
+    await withPluginTimeout(plugin.registerActionTypes({ types: [{ id: 'DOSE_ACTIONS', actions: [{ id: 'taken', title: 'مصرف شد' }, { id: 'later', title: 'بعداً' }] }] }), 'registerActionTypes');
+    await new CapacitorNotificationAdapter().ensureChannel();
+    if (typeof plugin.checkExactNotificationSetting === 'function') {
+      const exact = await plugin.checkExactNotificationSetting();
+      if (exact?.exact_alarm !== 'granted' && typeof plugin.changeExactNotificationSetting === 'function') {
+        await plugin.changeExactNotificationSetting();
+      }
+    }
+  } catch (error) {
+    console.warn('Notification permissions unavailable:', error);
+    throw error;
+  }
+}
+
+export async function addNotificationTapListener(onAction: (event: { occurrenceId: string; actionId?: string }) => void): Promise<(() => void) | undefined> {
+  const adapter = new CapacitorNotificationAdapter();
+  return adapter.onTap(onAction);
+}
