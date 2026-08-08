@@ -5,13 +5,27 @@
 
 import { DoseOccurrence, Medication } from '../types';
 import { NotificationEngine, plannedNotificationsFor } from '../notification/NotificationEngine';
-import { notificationAdapter } from '../adapters/CapacitorNotificationAdapter';
+import { notificationAdapter, NotificationPermissionStatus } from '../adapters/CapacitorNotificationAdapter';
 import { clockAdapter } from '../adapters/ClockAdapter';
 
 const engine = new NotificationEngine(notificationAdapter);
 
-export async function requestNotificationPermissions(): Promise<void> {
-  await engine.requestPermissions();
+/** حالا نتیجه‌ی واقعی مجوز را برمی‌گرداند — قبلاً void بود و هرچه پیش می‌آمد
+ *  فقط توی کنسول گم می‌شد؛ App.tsx می‌تواند از این برای نمایش وضعیت به کاربر
+ *  استفاده کند. */
+export async function requestNotificationPermissions(): Promise<NotificationPermissionStatus> {
+  return engine.requestPermissions();
+}
+
+export async function checkNotificationPermissionStatus(): Promise<NotificationPermissionStatus> {
+  return notificationAdapter.checkPermissionStatus();
+}
+
+/** برای دکمه‌ی «تست نوتیفیکیشن» در تنظیمات — یک نوتیفیکیشن واقعی ۵ ثانیه‌ی
+ *  دیگر روی گوشی زمان‌بندی می‌کند و نتیجه‌ی واقعی (موفق/شکست + پیام خطا) را
+ *  برمی‌گرداند تا در UI نمایش داده شود. */
+export async function sendTestNotification(): Promise<{ ok: boolean; error?: string }> {
+  return engine.sendTestNotification();
 }
 
 /**

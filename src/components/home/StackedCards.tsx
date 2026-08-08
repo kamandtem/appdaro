@@ -103,12 +103,22 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priorityMedId]);
 
-  // بخش ۱۷.۱ — بدون معنای عملیاتی: فقط یک حرکت نرم برای مرور کارت (شبیه
-  // ورق‌زدن)؛ رها کردن انگشت همیشه کارت را به جای اولش برمی‌گرداند. عملیات
-  // واقعی («مصرف شد»/«بعداً») فقط از دو دکمه‌ی صریح روی کارت انجام می‌شود.
+  // بخش ۱۷.۱ (revised دوم) — کشیدن انگشت فقط یک حس بصری «چرخ‌وفلک»ی می‌دهد:
+  // کل دسته‌ی کارت‌ها (کارت جلویی + کارت‌های پشت‌سری بالا + کارت‌های مصرف‌شده‌ی
+  // پایین) با هم و به‌شکل پیوسته دنبال انگشت حرکت می‌کنند — نه با یک آستانه‌ی
+  // ثابت که ناگهانی جابه‌جا کند. رها کردن انگشت همیشه و بدون هیچ اثری روی
+  // کدام occurrence جلوی صف است، همه‌چیز را نرم به جای اولش برمی‌گرداند.
+  // فقط دو دکمه‌ی روی کارت («مصرف شد»/«بعداً») اقدام واقعی انجام می‌دهند و
+  // همیشه روی orderedVisible[0] عمل می‌کنند — این حرکت هیچ‌وقت آن را عوض
+  // نمی‌کند.
   const [dragOffset, setDragOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [startY, setStartY] = useState(0);
+
+  // فاصله‌ی خام (پیکسل واقعی کشیده‌شده) که معادل «یک اسلات» چرخش کل دسته
+  // حساب می‌شود — عدد بزرگ‌تر یعنی چرخش نرم‌تر/کم‌حساس‌تر.
+  const DRAG_PX_PER_SLOT = 130;
+  const wheelShift = dragOffset / DRAG_PX_PER_SLOT;
 
   const [showSkipSheet, setShowSkipSheet] = useState(false);
   const [skipToast, setSkipToast] = useState<string | null>(null);
@@ -184,10 +194,17 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
   const handleTouchMove = (e: React.TouchEvent | React.MouseEvent) => {
     if (!isDragging) return;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    setDragOffset((clientY - startY) * 0.35); // حرکت میراشده — فقط بازخورد بصری، بدون آستانه‌ی عملیاتی (بخش ۱۷.۱)
+    const rawDelta = clientY - startY;
+    // فقط یه سقف امن برای فاصله‌های خیلی غیرعادی (مثلاً کشیدن با ماوس در
+    // پیش‌نمایش دسکتاپ) — در بازه‌ی طبیعی لمس روی گوشی، این کاملاً ۱ به ۱
+    // دنبال انگشت می‌رود.
+    const clamped = Math.max(-400, Math.min(400, rawDelta));
+    setDragOffset(clamped);
   };
   const handleTouchEnd = () => {
     setIsDragging(false);
+    // هیچ آستانه‌ای نیست و هیچ چیزی resolve نمی‌شود — فقط با یک انیمیشن نرم
+    // (transition پایین، وقتی isDragging=false) کل دسته برمی‌گردد سرجای اولش.
     setDragOffset(0);
   };
 
@@ -232,7 +249,7 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
           <div className="text-white">
             <p className="text-lg sm:text-xl font-black mb-2">با دو دکمه‌ی روی کارت کارتو مدیریت کن</p>
             <p className="text-sm sm:text-base text-white/80 max-w-xs mx-auto">
-              «مصرف شد» و «بعداً» — کارت‌ها را می‌توانی نرم ورق بزنی، اقدام همیشه از همین دو دکمه است.
+              «مصرف شد» و «بعداً» — کارت‌ها را می‌توانی نرم ورق بزنی و مرور کنی، اقدام همیشه فقط از همین دو دکمه است.
             </p>
           </div>
           <button
@@ -262,22 +279,25 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
       <div className="relative w-full max-w-md h-[480px] sm:h-[520px] flex items-center justify-center my-2 sm:my-4 overflow-visible">
 
         {orderedVisible.slice(1, 4).map((occ, idx) => {
-          const i = idx + 1;
-          const scale = 1 - i * 0.055;
-          const widthPct = 100 - i * 7;
-          const offsetPx = i * 34;
-          const opacity = Math.max(0.55, 1 - i * 0.16);
-          const zIndex = 39 - i;
+          const baseSlot = idx + 1;
+          const effectiveSlot = wheelShift - baseSlot; // به سمت صفر می‌رود وقتی به پایین هول می‌دهیم
+          const magnitude = Math.min(5, Math.abs(effectiveSlot));
+          const scale = Math.max(0.35, 1 - magnitude * 0.055);
+          const widthPct = Math.max(55, 100 - magnitude * 7);
+          const offsetPx = magnitude * 34;
+          const opacity = Math.max(0.12, 1 - magnitude * 0.16);
+          const zIndex = Math.round(39 - magnitude);
           const med = medById.get(occ.medId);
           if (!med) return null;
+          const towardTop = effectiveSlot <= 0;
 
           return (
             <div
               key={occ.id}
-              className="absolute left-1/2 top-1/2 transition-all duration-300 ease-out pointer-events-none"
+              className={`absolute left-1/2 top-1/2 pointer-events-none ${isDragging ? '' : 'transition-all duration-300 ease-out'}`}
               style={{
                 width: `${widthPct}%`,
-                transform: `translate(-50%, calc(-50% - ${offsetPx}px)) scale(${scale})`,
+                transform: `translate(-50%, calc(-50% ${towardTop ? '-' : '+'} ${offsetPx}px)) scale(${scale})`,
                 opacity,
                 zIndex
               }}
@@ -299,22 +319,25 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
         })}
 
         {takenList.map((occ, idx) => {
-          const i = idx + 1;
-          const scale = 1 - i * 0.055;
-          const widthPct = 100 - i * 7;
-          const offsetPx = i * 34;
-          const opacity = Math.max(0.55, 0.85 - i * 0.14);
-          const zIndex = 39 - i;
+          const baseSlot = idx + 1;
+          const effectiveSlot = wheelShift + baseSlot; // کارت‌های مصرف‌شده وقتی به بالا هول می‌دهیم به صفر نزدیک می‌شوند
+          const magnitude = Math.min(5, Math.abs(effectiveSlot));
+          const scale = Math.max(0.35, 1 - magnitude * 0.055);
+          const widthPct = Math.max(55, 100 - magnitude * 7);
+          const offsetPx = magnitude * 34;
+          const opacity = Math.max(0.12, 0.85 - magnitude * 0.14);
+          const zIndex = Math.round(39 - magnitude);
           const med = medById.get(occ.medId);
           if (!med) return null;
+          const towardTop = effectiveSlot <= 0;
 
           return (
             <div
               key={occ.id}
-              className="absolute left-1/2 top-1/2 transition-all duration-300 ease-out pointer-events-none"
+              className={`absolute left-1/2 top-1/2 pointer-events-none ${isDragging ? '' : 'transition-all duration-300 ease-out'}`}
               style={{
                 width: `${widthPct}%`,
-                transform: `translate(-50%, calc(-50% + ${offsetPx}px)) scale(${scale})`,
+                transform: `translate(-50%, calc(-50% ${towardTop ? '-' : '+'} ${offsetPx}px)) scale(${scale})`,
                 opacity,
                 filter: 'grayscale(25%)',
                 zIndex
@@ -341,7 +364,9 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
 
         {activeMed && activeOccurrence && (
           <div
-            className="absolute w-full px-2 z-40 cursor-grab active:cursor-grabbing transition-transform duration-150"
+            className={`absolute w-full px-2 z-40 cursor-grab active:cursor-grabbing ${
+              isDragging ? '' : 'transition-transform duration-300 ease-[cubic-bezier(0.34,1.4,0.64,1)]'
+            }`}
             style={{
               transform: `translateY(${dragOffset}px) scale(${1 - Math.min(Math.abs(dragOffset), 200) / 2000})`,
               opacity: Math.max(0.7, 1 - Math.abs(dragOffset) / 600)

@@ -9,7 +9,7 @@
 // idهای ذخیره‌شده را کنسل می‌کند.
 
 import { DoseOccurrence, Medication, ReminderKind } from '../types';
-import { NotificationAdapter, ScheduledNotificationSpec } from '../adapters/CapacitorNotificationAdapter';
+import { NotificationAdapter, NotificationPermissionStatus, ScheduledNotificationSpec } from '../adapters/CapacitorNotificationAdapter';
 import { REMINDER_LABEL } from '../domain/reminders/ReminderEngine';
 
 /** تولیدکننده‌ی id عددی یکتا برای هر نوتیفیکیشن native — به‌جای هش رشته‌ای
@@ -84,7 +84,15 @@ export class NotificationEngine {
       extra: { occurrenceId: occurrence.id, medId: med.id, kind: p.kind }
     }));
 
-    await this.adapter.schedule(specs);
+    const result = await this.adapter.schedule(specs);
+    if (!result.ok) {
+      // قبلاً اینجا صرفاً نادیده گرفته می‌شد و occurrence با notificationIds
+      // «موفق» برمی‌گشت — یعنی از دید بقیه‌ی برنامه انگار نوتیفیکیشن واقعاً
+      // زمان‌بندی شده بود، درحالی‌که هیچ‌چیزی روی گوشی ثبت نشده بود. حالا در
+      // این حالت notificationIds خالی می‌ماند تا دفعه‌ی بعد sync دوباره تلاش کند.
+      console.error(`[Notifications] زمان‌بندی برای occurrence ${occurrence.id} شکست خورد:`, result.error);
+      return { ...occurrence, notificationIds: [] };
+    }
     return { ...occurrence, notificationIds: specs.map(s => s.id) };
   }
 
@@ -96,8 +104,21 @@ export class NotificationEngine {
     return { ...occurrence, notificationIds: [] };
   }
 
-  async requestPermissions(): Promise<void> {
-    await this.adapter.requestPermissions();
+  async requestPermissions(): Promise<NotificationPermissionStatus> {
+    return this.adapter.requestPermissions();
+  }
+
+  /** تست تشخیصی — یک نوتیفیکیشن واقعی ۵ ثانیه بعد زمان‌بندی می‌کند تا معلوم
+   *  شود کل زنجیره (پلاگین → مجوز → schedule واقعی روی گوشی) کار می‌کند یا
+   *  کجا شکست می‌خورد؛ منتظر رسیدن نوبت واقعی یک دارو نمی‌مانیم. */
+  async sendTestNotification(): Promise<{ ok: boolean; error?: string }> {
+    const id = freshNotificationId();
+    return this.adapter.schedule([{
+      id,
+      title: '💊 تست نوتیفیکیشن داروتو',
+      body: 'اگه اینو می‌بینی، زمان‌بندی نوتیفیکیشن روی گوشیت درست کار می‌کنه.',
+      at: new Date(Date.now() + 5000)
+    }]);
   }
 
   async addTapListener(onTap: (occurrenceId: string, medId: string) => void): Promise<(() => void) | undefined> {

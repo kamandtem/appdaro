@@ -15,10 +15,27 @@ export interface ScheduledNotificationSpec {
 
 const CHANNEL_ID = 'daroto-dose-reminders';
 
+/** نتیجه‌ی صریح درخواست مجوز — دیگر «void» نیست، چون خودِ App.tsx/UI باید
+ *  بتواند به کاربر نشان دهد که آیا واقعاً مجوز گرفته شده یا نه (به‌جای اینکه
+ *  فقط توی کنسول یک warning بی‌صدا بماند که کاربر هیچ‌وقت نمی‌بیند). */
+export interface NotificationPermissionStatus {
+  /** آیا اصلاً روی این پلتفرم پلاگین native در دسترس است؟ false یعنی احتمالاً
+   *  داریم روی وب/پیش‌نمایش اجرا می‌شویم، نه اپ نصب‌شده روی گوشی. */
+  pluginAvailable: boolean;
+  /** مجوز نمایش نوتیفیکیشن (POST_NOTIFICATIONS در اندروید ۱۳+). */
+  notificationsGranted: boolean;
+  /** مجوز هشدار دقیق (SCHEDULE_EXACT_ALARM در اندروید ۱۲+) — اگر این نه باشد
+   *  نوتیفیکیشن‌ها ممکن است دیر/نامنظم برسند، نه اینکه اصلاً نرسند. */
+  exactAlarmGranted: boolean;
+  /** آخرین خطای واقعی (اگر چیزی شکست خورد) — برای نمایش/لاگ دقیق‌تر. */
+  lastError?: string;
+}
+
 export interface NotificationAdapter {
   isAvailable(): Promise<boolean>;
-  requestPermissions(): Promise<void>;
-  schedule(specs: ScheduledNotificationSpec[]): Promise<void>;
+  requestPermissions(): Promise<NotificationPermissionStatus>;
+  checkPermissionStatus(): Promise<NotificationPermissionStatus>;
+  schedule(specs: ScheduledNotificationSpec[]): Promise<{ ok: boolean; error?: string }>;
   cancel(ids: number[]): Promise<void>;
   addTapListener(onTap: (extra: Record<string, unknown>) => void): Promise<(() => void) | undefined>;
 }
@@ -27,7 +44,8 @@ async function getPlugin() {
   try {
     const mod = await import('@capacitor/local-notifications');
     return mod.LocalNotifications;
-  } catch {
+  } catch (e) {
+    console.error('[Notifications] پلاگین @capacitor/local-notifications در دسترس نیست:', e);
     return null;
   }
 }
@@ -37,7 +55,34 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
     return (await getPlugin()) !== null;
   }
 
-  async requestPermissions(): Promise<void> {
+  async checkPermissionStatus(): Promise<NotificationPermissionStatus> {
+    const plugin = await getPlugin();
+    if (!plugin) {
+      return { pluginAvailable: false, notificationsGranted: false, exactAlarmGranted: false };
+    }
+    let notificationsGranted = false;
+    let exactAlarmGranted = true; // اگر API موجود نباشد فرض می‌کنیم مشکلی نیست
+    let lastError: string | undefined;
+    try {
+      const perm = await plugin.checkPermissions();
+      notificationsGranted = perm?.display === 'granted';
+    } catch (e) {
+      lastError = String(e);
+      console.error('[Notifications] checkPermissions شکست خورد:', e);
+    }
+    try {
+      if (typeof plugin.checkExactNotificationSetting === 'function') {
+        const exact = await plugin.checkExactNotificationSetting();
+        exactAlarmGranted = !exact?.exact_alarm || exact.exact_alarm === 'granted';
+      }
+    } catch (e) {
+      lastError = String(e);
+      console.error('[Notifications] checkExactNotificationSetting شکست خورد:', e);
+    }
+    return { pluginAvailable: true, notificationsGranted, exactAlarmGranted, lastError };
+  }
+
+  async requestPermissions(): Promise<NotificationPermissionStatus> {
     const plugin = await getPlugin();
     if (!plugin) {
       try {
@@ -45,15 +90,25 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
           await Notification.requestPermission();
         }
       } catch (e) {
-        console.warn('Web notification permission request failed:', e);
+        console.error('[Notifications] درخواست مجوز نوتیفیکیشن وب شکست خورد:', e);
       }
-      return;
+      return { pluginAvailable: false, notificationsGranted: false, exactAlarmGranted: false };
     }
 
+    let notificationsGranted = false;
+    let lastError: string | undefined;
+
     try {
-      await plugin.requestPermissions();
+      const result = await plugin.requestPermissions();
+      notificationsGranted = result?.display === 'granted';
+      // مهم: اینجا دیگه فقط warn نمی‌کنیم — اگر کاربر رد کرده باشد، این
+      // اطلاعات باید به لایه‌ی بالاتر (UI) برگردد تا نمایش داده شود.
+      if (!notificationsGranted) {
+        console.error('[Notifications] کاربر مجوز نوتیفیکیشن را رد کرده یا داده نشده. نتیجه:', result);
+      }
     } catch (e) {
-      console.warn('Local notification permission request failed:', e);
+      lastError = String(e);
+      console.error('[Notifications] plugin.requestPermissions() پرتاب خطا کرد:', e);
     }
 
     try {
@@ -67,25 +122,37 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
         lights: true
       });
     } catch (e) {
-      console.warn('Failed to create/ensure notification channel:', e);
+      lastError = String(e);
+      console.error('[Notifications] ساخت کانال نوتیفیکیشن شکست خورد:', e);
     }
 
+    let exactAlarmGranted = true;
     try {
       if (typeof plugin.checkExactNotificationSetting === 'function') {
         const exact = await plugin.checkExactNotificationSetting();
         if (exact?.exact_alarm && exact.exact_alarm !== 'granted' && typeof plugin.changeExactNotificationSetting === 'function') {
           await plugin.changeExactNotificationSetting();
+          const recheck = await plugin.checkExactNotificationSetting();
+          exactAlarmGranted = !recheck?.exact_alarm || recheck.exact_alarm === 'granted';
         }
       }
     } catch (e) {
-      console.warn('Exact-alarm permission check/request failed:', e);
+      lastError = String(e);
+      exactAlarmGranted = false;
+      console.error('[Notifications] بررسی/درخواست مجوز هشدار دقیق شکست خورد:', e);
     }
+
+    return { pluginAvailable: true, notificationsGranted, exactAlarmGranted, lastError };
   }
 
-  async schedule(specs: ScheduledNotificationSpec[]): Promise<void> {
-    if (specs.length === 0) return;
+  async schedule(specs: ScheduledNotificationSpec[]): Promise<{ ok: boolean; error?: string }> {
+    if (specs.length === 0) return { ok: true };
     const plugin = await getPlugin();
-    if (!plugin) return;
+    if (!plugin) {
+      const error = 'پلاگین نوتیفیکیشن native در دسترس نیست (احتمالاً در حال اجرا روی وب/پیش‌نمایش هستیم، نه اپ نصب‌شده)';
+      console.error('[Notifications]', error);
+      return { ok: false, error };
+    }
     try {
       await plugin.schedule({
         notifications: specs.map(s => ({
@@ -99,8 +166,13 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
             : { at: s.at, allowWhileIdle: true }
         }))
       });
+      return { ok: true };
     } catch (e) {
-      console.warn('Failed to schedule notifications:', e);
+      // قبلاً اینجا فقط console.warn می‌شد و خطا کاملاً بی‌صدا گم می‌شد —
+      // همان دلیلی که کاربر هیچ نوتیفیکیشنی نمی‌دید و هیچ سرنخی هم نداشت.
+      const error = String(e);
+      console.error('[Notifications] schedule() شکست خورد:', e);
+      return { ok: false, error };
     }
   }
 
