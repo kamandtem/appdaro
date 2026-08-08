@@ -110,7 +110,7 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
           flush to the right edge horizontally. Height follows its own content
           instead of being stretched, so there's no leftover empty space. */}
       <div 
-        className="relative w-[76vw] max-w-[290px] max-h-[96vh] bg-[#F0FDF4]/95 dark:bg-slate-900 shadow-2xl flex flex-col justify-between overflow-hidden z-10 p-4 rounded-[28px] border border-white/40 dark:border-slate-800 animate-in slide-in-from-right duration-300"
+        className="relative w-[76vw] max-w-[290px] max-h-[93vh] bg-[#F0FDF4]/95 dark:bg-slate-900 shadow-2xl flex flex-col justify-between overflow-hidden z-10 p-4 rounded-[28px] border border-white/40 dark:border-slate-800 animate-in slide-in-from-right duration-300"
         style={{
           transform: `translateX(${dragX}px)`,
           opacity: Math.max(0.3, 1 - dragX / 300),
@@ -121,36 +121,43 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
         onTouchEnd={handleTouchEnd}
       >
         
-        <div className="space-y-2.5 flex flex-col">
+        <div className="space-y-3 flex flex-col">
           {/* Top Profile Card Header */}
-          <div className="p-2 relative shrink-0">
-            
-            {/* Top Toolbar Actions — تغییر تم (روز/شب) و دکمهٔ چرخ‌دندهٔ تنظیمات، هر دو
-                زیر هم و با اندازهٔ کافی برای لمس راحت */}
-            <div className="flex items-center justify-end gap-2 mb-1">
-              <button
-                onClick={onToggleDarkMode}
-                className="p-2.5 bg-teal-100/60 dark:bg-slate-700/80 text-teal-700 dark:text-teal-300 rounded-xl hover:scale-105 transition-all shadow-xs"
-                title={isDarkMode ? 'حالت روز' : 'حالت شب'}
-              >
-                {isDarkMode ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5 text-teal-700" />}
-              </button>
+          <div className="px-2 pt-1 relative shrink-0">
+
+            {/* Top Toolbar Actions — یک ردیف افقی به‌جای دو دکمه‌ی روی‌هم؛ فضای
+                عمودی زیادی که قبلاً بالای عکس کاربر خالی می‌ماند همینجا آزاد شد. */}
+            <div className="flex items-center justify-between mb-2.5">
               <button
                 onClick={() => {
                   onOpenSettings();
                   onClose();
                 }}
-                className="p-2.5 bg-white/70 dark:bg-slate-700/80 text-slate-600 dark:text-slate-300 rounded-xl hover:scale-105 transition-all shadow-xs border border-slate-200/60 dark:border-slate-600"
+                className="p-2 bg-white/70 dark:bg-slate-700/80 text-slate-600 dark:text-slate-300 rounded-xl hover:scale-105 transition-all shadow-xs border border-slate-200/60 dark:border-slate-600"
                 title="تنظیمات"
               >
-                <SettingsIcon className="w-5 h-5" />
+                <SettingsIcon className="w-[18px] h-[18px]" />
+              </button>
+              <button
+                onClick={onToggleDarkMode}
+                className="p-2 bg-teal-100/60 dark:bg-slate-700/80 text-teal-700 dark:text-teal-300 rounded-xl hover:scale-105 transition-all shadow-xs"
+                title={isDarkMode ? 'حالت روز' : 'حالت شب'}
+              >
+                {isDarkMode ? <Sun className="w-[18px] h-[18px] text-amber-400" /> : <Moon className="w-[18px] h-[18px] text-teal-700" />}
               </button>
             </div>
 
-            {/* Profile Avatar (Centered) */}
+            {/* Profile Avatar (Centered) — حلقه‌ی دور عکس دیگر فقط تزئینی
+                نیست: واقعاً درصد پایبندی امروز را نشان می‌دهد (روند رایج
+                «حلقه‌ی پیشرفت» به‌جای گرادیان ساکن)، و خودِ عکس هم بزرگ‌تر شد. */}
             <div className="flex flex-col items-center text-center">
-              <div className="relative mb-1.5">
-                <div className="w-20 h-20 rounded-full p-[3px] shadow-lg flex items-center justify-center" style={{ background: `conic-gradient(from 0deg, oklch(68% 0.15 170) ${Math.min(100, Math.max(0, adherenceRate))}%, oklch(88% 0.04 170) 0)` }}>
+              <div className="relative mb-2">
+                <div
+                  className="w-20 h-20 rounded-full p-[3px] shadow-lg flex items-center justify-center"
+                  style={{
+                    background: `conic-gradient(#14b8a6 ${Math.round(adherenceRate * 3.6)}deg, #e2e8f0 ${Math.round(adherenceRate * 3.6)}deg)`
+                  }}
+                >
                   <div className="w-full h-full rounded-full bg-teal-600 flex items-center justify-center text-white text-xl font-bold border-2 border-white dark:border-slate-800 shadow-inner overflow-hidden">
                     {userAvatarUrl ? (
                       <img src={userAvatarUrl} alt={userName} className="w-full h-full object-cover" />
@@ -159,9 +166,9 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                     )}
                   </div>
                 </div>
-                <div className="absolute bottom-0 right-0 w-4 h-4 bg-teal-500 rounded-full border-2 border-white dark:border-slate-800 flex items-center justify-center text-white shadow-md cursor-pointer hover:scale-110 transition-transform">
+                <div className="absolute bottom-0 right-0 w-5 h-5 bg-teal-500 rounded-full border-2 border-white dark:border-slate-800 flex items-center justify-center text-white shadow-md cursor-pointer hover:scale-110 transition-transform">
                   <label className="w-full h-full flex items-center justify-center cursor-pointer">
-                    <Camera className="w-2 h-2" />
+                    <Camera className="w-2.5 h-2.5" />
                     <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} />
                   </label>
                 </div>
@@ -175,19 +182,19 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                 مدیریت و یادآوری سلامت
               </p>
 
-              {/* Skill Tags */}
-              <div className="flex items-center gap-1.5 mt-1.5">
-                <span className="px-2 py-0.5 rounded-full bg-teal-100/70 dark:bg-teal-950/70 text-teal-800 dark:text-teal-300 text-[10px] font-bold border border-teal-200/50 dark:border-teal-800/50">
+              {/* یک ردیف واحد از آمارها به‌جای دو بلوک جدا (تگ‌ها + جدول
+                  معیارها با خط جداکننده) — همان اطلاعات، فضای کمتر. */}
+              <div className="flex items-center justify-center flex-wrap gap-1.5 mt-2">
+                <span className="px-2 py-1 rounded-full bg-teal-100/70 dark:bg-teal-950/70 text-teal-800 dark:text-teal-300 text-[10px] font-bold border border-teal-200/50 dark:border-teal-800/50">
                   فعال: {toPersianNumbers(activeMedsCount)}
                 </span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-100/70 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold border border-emerald-200/50 dark:border-emerald-800/50">
+                <span className="px-2 py-1 rounded-full bg-emerald-100/70 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold border border-emerald-200/50 dark:border-emerald-800/50">
                   پایبندی: {toPersianNumbers(adherenceRate)}٪
                 </span>
-              </div>
-
-              <div className="flex items-center justify-center gap-1.5 mt-2 flex-wrap">
-                <span className="px-2 py-1 rounded-full bg-slate-100/80 dark:bg-slate-800 text-[10px] font-black text-slate-700 dark:text-slate-200">سلامت {healthStarsValue} ★</span>
-                <span className="px-2 py-1 rounded-full bg-slate-100/80 dark:bg-slate-800 text-[10px] font-black text-slate-700 dark:text-slate-200">{adherenceRate >= 90 ? 'عالی' : 'منظم'}</span>
+                <span className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100/70 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-[10px] font-bold border border-amber-200/50 dark:border-amber-800/50">
+                  {healthStarsValue}
+                  <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-500" strokeLinejoin="round" />
+                </span>
               </div>
             </div>
           </div>

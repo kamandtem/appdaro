@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
 import { CheckCircle2, X, Zap, Clock } from 'lucide-react';
 import { toPersianNumbers } from '../../utils/persian';
-import { Instant } from '../../types';
 import { ClockFacePicker } from '../common/ClockFacePicker';
 
 interface ScheduleStartAtPickerProps {
-  scheduleStartAt?: Instant;
-  onChangeScheduleStartAt: (instant: Instant) => void;
+  scheduleStartAt?: string;
+  onChangeScheduleStartAt: (iso: string) => void;
 }
 
 type ViewState = 'closed' | 'choice' | 'custom';
@@ -23,31 +22,31 @@ export const ScheduleStartAtPicker: React.FC<ScheduleStartAtPickerProps> = ({
 }) => {
   const [view, setView] = useState<ViewState>('closed');
 
-  const initial = scheduleStartAt !== undefined ? new Date(scheduleStartAt) : new Date();
+  const initial = scheduleStartAt ? new Date(scheduleStartAt) : new Date();
   const [customHour, setCustomHour] = useState<number>(initial.getHours());
   const [customMinute, setCustomMinute] = useState<number>(initial.getMinutes());
 
   const openChoice = () => {
     // هر بار که دوباره باز می‌شود، ساعت گرد را با آخرین مقدار انتخاب‌شده (یا اکنون) هماهنگ کن
-    const base = scheduleStartAt !== undefined ? new Date(scheduleStartAt) : new Date();
+    const base = scheduleStartAt ? new Date(scheduleStartAt) : new Date();
     setCustomHour(base.getHours());
     setCustomMinute(base.getMinutes());
     setView('choice');
   };
 
   const chooseNow = () => {
-    onChangeScheduleStartAt(Date.now());
+    onChangeScheduleStartAt(new Date().toISOString());
     setView('closed');
   };
 
   const confirmCustom = () => {
     const d = new Date();
     d.setHours(customHour, customMinute, 0, 0);
-    onChangeScheduleStartAt(d.getTime());
+    onChangeScheduleStartAt(d.toISOString());
     setView('closed');
   };
 
-  const currentTimeLabel = scheduleStartAt !== undefined
+  const currentTimeLabel = scheduleStartAt
     ? `${toPersianNumbers(new Date(scheduleStartAt).getHours().toString().padStart(2, '0'))}:${toPersianNumbers(
         new Date(scheduleStartAt).getMinutes().toString().padStart(2, '0')
       )}`
@@ -59,12 +58,12 @@ export const ScheduleStartAtPicker: React.FC<ScheduleStartAtPickerProps> = ({
         type="button"
         onClick={openChoice}
         className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl text-xs font-bold border transition-all ${
-          scheduleStartAt !== undefined
+          scheduleStartAt
             ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
             : 'bg-white dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50'
         }`}
       >
-        {scheduleStartAt !== undefined ? (
+        {scheduleStartAt ? (
           <>
             <CheckCircle2 className="w-4 h-4" />
             زمان‌بندی از ساعت {currentTimeLabel} آغاز می‌شود

@@ -1,12 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Medication, MedicationForm, FrequencyType, Instant } from '../../types';
+import { Medication, MedicationForm, FrequencyType } from '../../types';
 import { toPersianNumbers, toEnglishNumbers } from '../../utils/persian';
 import { Pill, Droplet, Syringe, Pipette, Bandage, Package, Plus, X, CheckCircle2, Camera, ChevronDown, Check, Pencil } from 'lucide-react';
 import { CylinderTimePicker, computeIntervalTimes, computeIntervalTimesFromClock, computeWeekdaySchedule } from '../common/CylinderTimePicker';
 import { WheelPicker, WheelPickerItem } from '../common/WheelPicker';
 import { ScheduleStartAtPicker } from './ScheduleStartAtPicker';
 import { ScheduleOptimizer } from './ScheduleOptimizer';
-import { INSTRUCTION_TAG_LABELS } from '../../data/medicationCatalog';
 import { resizeImageFile } from '../../utils/image';
 import { searchMedicationCatalog, getCatalogEntryById, MedicationCatalogEntry } from '../../data/medicationCatalog';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
@@ -105,7 +104,6 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
   // انتخاب فرم برای کاربر قفل می‌شود — چون در واقعیت آن دارو با فرم دیگری
   // وجود ندارد (مثل قطره چشمی که هرگز قرص نیست).
   const selectedCatalogEntry = catalogId ? getCatalogEntryById(catalogId) : undefined;
-  const exactCatalogEntry = selectedCatalogEntry ?? searchMedicationCatalog(name, 20).find(entry => entry.fa === name || entry.en.toLowerCase() === name.toLowerCase());
   const lockedForms = selectedCatalogEntry?.availableForms;
   const [frequency, setFrequency] = useState<FrequencyType>(editMedication?.frequency ?? 'هر چند ساعت');
   const [isFrequencyOpen, setIsFrequencyOpen] = useState(false);
@@ -142,13 +140,11 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
   // Schedule times
   const [selectedTimes, setSelectedTimes] = useState<string[]>(editMedication?.times ?? initialTimes);
   const [timeError, setTimeError] = useState(false);
-  const [scheduleStartAt, setScheduleStartAt] = useState<Instant | undefined>(
-    editMedication?.scheduleStartAt ? new Date(editMedication.scheduleStartAt).getTime() : undefined
-  );
-
-  // Photo
+  const [scheduleStartAt, setScheduleStartAt] = useState<string | undefined>(editMedication?.scheduleStartAt);
+  // زمان‌بندی دستی کاربر پیش از اعمال «پیشنهاد بهترین زمان‌بندی» (ScheduleOptimizer) — برای دکمه‌ی بازگشت.
   const [manualScheduleBackup, setManualScheduleBackup] = useState(editMedication?.optimizedScheduleBackup);
 
+  // Photo
   const [photoUrl, setPhotoUrl] = useState<string | undefined>(editMedication?.photoUrl);
 
   // Stock
@@ -365,7 +361,7 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
         instructions: instructions.trim() || editMedication.instructions,
         reason: reason.trim() || editMedication.reason,
         photoUrl,
-        scheduleStartAt: scheduleStartAt !== undefined ? new Date(scheduleStartAt).toISOString() : undefined,
+        scheduleStartAt,
         optimizedScheduleBackup: manualScheduleBackup
       };
       onUpdateMedication?.(updatedMed);
@@ -394,7 +390,7 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
       reason: reason.trim() || undefined,
       photoUrl,
       createdAt: new Date().toLocaleDateString('fa-IR'),
-      scheduleStartAt: scheduleStartAt !== undefined ? new Date(scheduleStartAt).toISOString() : undefined,
+      scheduleStartAt,
       optimizedScheduleBackup: manualScheduleBackup
     };
 
@@ -482,11 +478,6 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
                   </div>
                 )}
               </div>
-              {exactCatalogEntry?.instructionTags?.length ? (
-                <div className="flex flex-wrap gap-1.5 mt-2" aria-label="راهنمای عمومی مصرف">
-                  {exactCatalogEntry.instructionTags.map(tag => <span key={tag} className="rounded-full bg-sky-50 px-2 py-1 text-[10px] font-bold text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">{INSTRUCTION_TAG_LABELS[tag]}</span>)}
-                </div>
-              ) : null}
             </div>
 
             <div>
@@ -556,7 +547,7 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
 
               {/* Rotating cylinder dose picker — the number rolls freely; the unit/description
                   lives as a title above and a caption below, never squeezed inside the wheel row */}
-              <div className="bg-slate-50/80 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 rounded-3xl p-2 shadow-inner">
+              <div className="bg-slate-50/80 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 rounded-3xl p-3 shadow-inner">
                 <p className="text-center text-sm font-black text-slate-700 dark:text-slate-200 mb-1">
                   {doseType === 'count' && (
                     <>مقدار: <span className="text-teal-600 dark:text-teal-400">{toPersianNumbers(countValue)}</span> عدد</>
@@ -662,7 +653,7 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
                 onChangeIntervalDays={setIntervalDays}
                 monthDay={monthDay}
                 onChangeMonthDay={setMonthDay}
-                scheduleStartAt={scheduleStartAt !== undefined ? new Date(scheduleStartAt).toISOString() : undefined}
+                scheduleStartAt={scheduleStartAt}
               />
 
               {timeError && (
@@ -682,18 +673,23 @@ export const AddMedicationWizard: React.FC<AddMedicationWizardProps> = ({
               <ScheduleOptimizer
                 times={frequency === 'هر چند ساعت' ? (scheduleStartAt ? computeIntervalTimesFromClock(intervalHours, new Date(scheduleStartAt).getHours(), new Date(scheduleStartAt).getMinutes()) : computeIntervalTimes(intervalHours)) : selectedTimes}
                 intervalHours={frequency === 'هر چند ساعت' ? intervalHours : undefined}
-                scheduleStartAt={scheduleStartAt !== undefined ? new Date(scheduleStartAt).toISOString() : undefined}
+                scheduleStartAt={scheduleStartAt}
                 hasBackup={!!manualScheduleBackup}
                 onRestore={() => {
                   if (!manualScheduleBackup) return;
                   setSelectedTimes(manualScheduleBackup.times);
-                  setScheduleStartAt(manualScheduleBackup.scheduleStartAt ? new Date(manualScheduleBackup.scheduleStartAt).getTime() : undefined);
+                  setScheduleStartAt(manualScheduleBackup.scheduleStartAt);
                   setManualScheduleBackup(undefined);
                 }}
                 onApply={(suggestedTimes, suggestedStartAt) => {
-                  if (!manualScheduleBackup) setManualScheduleBackup({ times: frequency === 'هر چند ساعت' ? (scheduleStartAt ? computeIntervalTimesFromClock(intervalHours, new Date(scheduleStartAt).getHours(), new Date(scheduleStartAt).getMinutes()) : computeIntervalTimes(intervalHours)) : selectedTimes, scheduleStartAt: scheduleStartAt !== undefined ? new Date(scheduleStartAt).toISOString() : undefined });
+                  if (!manualScheduleBackup) {
+                    setManualScheduleBackup({
+                      times: frequency === 'هر چند ساعت' ? (scheduleStartAt ? computeIntervalTimesFromClock(intervalHours, new Date(scheduleStartAt).getHours(), new Date(scheduleStartAt).getMinutes()) : computeIntervalTimes(intervalHours)) : selectedTimes,
+                      scheduleStartAt
+                    });
+                  }
                   setSelectedTimes(suggestedTimes);
-                  if (suggestedStartAt) setScheduleStartAt(new Date(suggestedStartAt).getTime());
+                  if (suggestedStartAt) setScheduleStartAt(suggestedStartAt);
                 }}
               />
             </div>

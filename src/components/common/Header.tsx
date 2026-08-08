@@ -1,22 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, Menu, Activity, Clock, Sparkles } from 'lucide-react';
-import { toPersianNumbers } from '../../utils/persian';
-import { HomeCard } from '../../application/HomeQueueService';
+import { toEnglishNumbers, toPersianNumbers } from '../../utils/persian';
+import { Medication, DoseLog } from '../../types';
+import { medicationTimeSlots, isDoseSlotResolvedToday } from '../../utils/doseSchedule';
 
 interface HeaderProps {
   onOpenMenu: () => void;
-  /** همان اولین کارت `HomeQueueService.visibleCards`، نه یک محاسبه‌ی دوم. */
-  nextCard: HomeCard | null;
-  totalToday: number;
-  resolvedToday: number;
+  medications: Medication[];
+  logs: DoseLog[];
+  /** Called with a medication id when the user taps the "نوبت بعدی" row — should
+   *  navigate to the home tab and bring that medication's card to the front. */
   onOpenReminder?: (medId: string) => void;
 }
 
+// Converts a "HH:MM" (Persian or English digits) schedule time into minutes-of-day
+const timeToMinutes = (time: string): number => {
+  const en = toEnglishNumbers(time);
+  const [h, m] = en.split(':').map(Number);
+  if (Number.isNaN(h)) return Number.MAX_SAFE_INTEGER;
+  return h * 60 + (Number.isNaN(m) ? 0 : m);
+};
+
 export const Header: React.FC<HeaderProps> = ({
   onOpenMenu,
-  nextCard,
-  totalToday,
-  resolvedToday,
+  medications,
+  logs,
   onOpenReminder
 }) => {
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -32,8 +40,38 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const progressPercent = totalToday > 0 ? Math.round((resolvedToday / totalToday) * 100) : 0;
-  const badgeCount = Math.max(0, totalToday - resolvedToday);
+  // Today's adherence progress, kept in sync with the reports panel logic —
+  // computed per وعده (dose slot), not per medication, so a 3-times-a-day
+  // medication with only its morning dose taken still counts 2 pending وعده.
+  const todayStr = new Date().toISOString().split('T')[0];
+  const activeMeds = medications.filter(m => m.isActive);
+  const pendingSlots: { med: Medication; slotIndex: number; time: string }[] = [];
+  activeMeds.forEach(med => {
+    medicationTimeSlots(med).forEach((time, slotIndex) => {
+      if (!isDoseSlotResolvedToday(med.id, slotIndex, logs, todayStr)) {
+        pendingSlots.push({ med, slotIndex, time });
+      }
+    });
+  });
+  const totalTodayCount = activeMeds.reduce((sum, m) => sum + medicationTimeSlots(m).length, 0);
+  const completedTodayCount = totalTodayCount - pendingSlots.length;
+  const progressPercent = totalTodayCount > 0 ? Math.round((completedTodayCount / totalTodayCount) * 100) : 0;
+
+  // Find the next upcoming dose among today's pending وعده‌ها. Built once as an
+  // immutable value (instead of two mutable `let`s reassigned inside a loop) so
+  // TypeScript can correctly narrow it as non-null inside the JSX below.
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const nextDose = pendingSlots.reduce<{ med: Medication; time: string; diff: number } | null>(
+    (closest, { med, time }) => {
+      const mins = timeToMinutes(time);
+      const diff = mins >= nowMinutes ? mins - nowMinutes : mins + 24 * 60 - nowMinutes;
+      return !closest || diff < closest.diff ? { med, time, diff } : closest;
+    },
+    null
+  );
+
+  const badgeCount = pendingSlots.length;
 
   return (
     <header className="sticky top-2 z-40 px-3 sm:px-6 transition-all duration-200">
@@ -104,17 +142,17 @@ export const Header: React.FC<HeaderProps> = ({
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium mt-1.5">
-                  {toPersianNumbers(resolvedToday)} از {toPersianNumbers(totalToday)} نوبت ثبت شده
+                  {toPersianNumbers(completedTodayCount)} از {toPersianNumbers(totalTodayCount)} نوبت مصرف شده
                 </p>
               </div>
 
               {/* Next dose row */}
               <div className="border-t border-slate-100 dark:border-slate-800 pt-3.5">
-                {nextCard ? (
+                {nextDose ? (
                   <button
                     type="button"
                     onClick={() => {
-                      onOpenReminder?.(nextCard.medicationId);
+                      onOpenReminder?.(nextDose.med.id);
                       setIsPanelOpen(false);
                     }}
                     className="w-full flex items-center gap-3 bg-teal-50/70 dark:bg-teal-950/40 hover:bg-teal-100/80 dark:hover:bg-teal-950/60 rounded-2xl p-3 text-right transition-colors active:scale-[0.98]"
@@ -127,7 +165,7 @@ export const Header: React.FC<HeaderProps> = ({
                         نوبت بعدی
                       </span>
                       <p className="font-black text-slate-800 dark:text-white text-sm truncate">
-                        {nextCard.medicationName} - ساعت {toPersianNumbers(`${String(nextCard.timeOfDay.hour).padStart(2, '0')}:${String(nextCard.timeOfDay.minute).padStart(2, '0')}`)}
+                        {nextDose.med.name} - ساعت {toPersianNumbers(nextDose.time)}
                       </p>
                     </div>
                   </button>

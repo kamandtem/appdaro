@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { App as CapacitorApp } from '@capacitor/app';
-import { AppState, Medication, DoseStatus, NavigationTab, FontSize, SkipReason } from './types';
+import { AppState, Medication, NavigationTab, FontSize, SkipReason, DoseOccurrence } from './types';
 import { loadAppState, saveAppState } from './services/storageService';
 import { Header } from './components/common/Header';
 import { Navigation } from './components/common/Navigation';
@@ -15,16 +15,17 @@ import { InteractionsView } from './components/interactions/InteractionsView';
 import { PharmacyView } from './components/pharmacy/PharmacyView';
 import { MedicationCatalogEntry, INSTRUCTION_TAG_LABELS } from './data/medicationCatalog';
 import { SettingsView } from './components/settings/SettingsView';
-import { requestNotificationPermissions, addNotificationTapListener } from './adapters/CapacitorNotificationAdapter';
+import { requestNotificationPermissions, syncOccurrenceNotifications, cancelOccurrenceNotifications, addNotificationTapListener, DOSE_ACTION_TAKEN, DOSE_ACTION_SNOOZE, DOSE_ACTION_SKIP } from './services/notificationService';
+import { clockAdapter } from './adapters/ClockAdapter';
+import { appLifecycleAdapter } from './adapters/AppLifecycleAdapter';
+import { OccurrenceGenerator, DEFAULT_HORIZON_DAYS } from './domain/occurrence/OccurrenceGenerator';
+import { ResolverEngine } from './domain/occurrence/ResolverEngine';
+import { runLegacyToOccurrenceMigration } from './migration/legacyToOccurrenceMigration';
+import { DoseOccurrenceRepository } from './repository/DoseOccurrenceRepository';
+import { medicationTimeSlots } from './utils/doseSchedule';
+import { timeOfDayFromSlotId } from './domain/scheduling/SchedulingEngine';
+import { toEnglishNumbers } from './utils/persian';
 import { LogOut } from 'lucide-react';
-// Composition root و Occurrence Resolver: تنها مسیر write وضعیت occurrence.
-import { homeQueueDeps, occurrenceQueryService, resolverDeps, syncOccurrences, syncPendingNotifications } from './application/runtime';
-import { sweepMissed } from './domain/occurrence/ResolverEngine';
-import { resolve as resolveOccurrence, snooze as snoozeOccurrence } from './domain/occurrence/ResolverEngine';
-// تیکه ۱۰ — DESIGN.md بخش ۱۷: پنل خانه از این به بعد صفش را از
-// HomeQueueService می‌گیرد (پنجره‌ی فعال‌سازی + سقف ۵ کارت + ترتیب اولویت)،
-// نه از ساختِ درجای «وعده‌های امروز» داخل StackedCards.
-import { homeCards, nextTransitionAt, todaySummary } from './application/HomeQueueService';
 
 const FONT_SIZE_CLASS: Record<FontSize, string> = {
   small: 'text-sm',
@@ -32,14 +33,131 @@ const FONT_SIZE_CLASS: Record<FontSize, string> = {
   large: 'text-lg'
 };
 
-// «بعداً» یک کارت را در صف خانه به عقب می‌برد — این کاملاً به انتخاب خود
-// کاربر است و هیچ تایمر ثابتی (مثل ۵ دقیقه‌ی قبلی) ندارد که خودکار کارت را
-// برگرداند؛ کارت تا وقتی کاربر خودش اقدام دیگری کند (یا دیگر کارتی جلوترش
-// نمانده باشد) همان‌جا ته صف می‌ماند. ربطی به سیستم ددلاین/یادآورهای سه‌گانه‌ی
-// بخش ۳ ندارد — آن سیستم کاملاً مستقل و بر اساس زمان واقعی دوز اجرا می‌شود.
-// چند وقت یک‌بار وضعیت دوزهای در انتظار رو با ددلاینشون مقایسه می‌کنیم تا
-// «missed» به‌موقع (و بدون نیاز به رفرش) ثبت بشه.
-const MISSED_CHECK_INTERVAL_MS = 30 * 1000;
+// بخش ۴ سند («Missed»): sweepMissed روی کل backlog pending اجرا می‌شود — نه
+// فقط «امروز» — تا در هر resume/boot و در فاصله‌های دوره‌ای کوتاه، دوزهای
+// ازدست‌رفته حتی اگر گوشی چند روز خاموش بوده هم گم نشوند.
+const SWEEP_INTERVAL_MS = 30 * 1000;
+
+const occurrenceGenerator = new OccurrenceGenerator(clockAdapter);
+const resolverEngine = new ResolverEngine(clockAdapter);
+
+// بخش ۱۵ سند (ریسک «رشد نامحدود حجم occurrence»): بدون pruning، هم
+// doseOccurrences و هم doseLogs (dual-write) تا ابد بزرگ می‌شن و می‌تونن به
+// سقف حجمی localStorage نزدیک بشن. نگه‌داری pending همیشه (حتی قدیمی —
+// باید توسط sweepMissed رسیدگی بشه، نه پاک بشه)، و رکوردهای resolve‌شده‌ی
+// قدیمی‌تر از این بازه حذف می‌شن — همان بازه‌ی DoseOccurrenceRepository.
+const DOSE_LOG_RETENTION_DAYS = 120;
+
+/** فاز ۵ سند (پاک‌سازی): pruning واقعی روی هر دو آرایه — قبلاً
+ *  DoseOccurrenceRepository.pruneOld نوشته شده بود ولی هیچ‌جا صدا زده
+ *  نمی‌شد؛ اینجا هم آن و هم معادلش برای doseLogs واقعاً اجرا می‌شود. */
+function pruneOldData(prev: AppState): AppState {
+  const now = clockAdapter.now();
+  const prunedOccurrences = new DoseOccurrenceRepository(prev.doseOccurrences).pruneOld(now);
+  const cutoff = now.getTime() - DOSE_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const prunedLogs = prev.doseLogs.filter(l => new Date(l.date).getTime() >= cutoff);
+
+  if (prunedOccurrences.length === prev.doseOccurrences.length && prunedLogs.length === prev.doseLogs.length) {
+    return prev; // چیزی برای حذف نبود — همان reference قبلی برگردانده می‌شود
+  }
+  return { ...prev, doseOccurrences: prunedOccurrences, doseLogs: prunedLogs };
+}
+
+/** slotId حالا از خودِ مقدار ساعت مشتق می‌شود (`${medId}::HH:mm`)، نه از
+ *  ایندکس در آرایه (بخش ۱۳ - پل مهاجرت در SchedulingEngine؛ رفع باگ occurrence
+ *  تکراری هنگام حذف/جابه‌جایی یک وعده). این کمکی فقط برای dual-write به
+ *  DoseLog قدیمی — که هنوز `slotIndex` عددی می‌خواهد — همان ساعت را در
+ *  medicationTimeSlots(med) پیدا و ایندکسش را برمی‌گرداند. */
+function legacySlotIndexFromSlotId(slotId: string, med: Medication): number {
+  const timeOfDay = timeOfDayFromSlotId(slotId);
+  if (!timeOfDay) return 0;
+  const idx = medicationTimeSlots(med).findIndex(t => toEnglishNumbers(t) === timeOfDay);
+  return idx === -1 ? 0 : idx;
+}
+
+function occurrenceToLegacyDoseLog(occ: DoseOccurrence, med: Medication, status: 'taken' | 'skipped' | 'missed', timeZoneId: string) {
+  const slotIndex = legacySlotIndexFromSlotId(occ.slotId, med);
+  return {
+    id: 'log_' + Math.random().toString(36).substring(2, 9),
+    medId: med.id,
+    slotIndex,
+    medName: med.name,
+    medForm: med.form,
+    medDose: med.dose,
+    scheduledTime: medicationTimeSlots(med)[slotIndex] || medicationTimeSlots(med)[0],
+    actualTime: status !== 'missed' ? new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) : undefined,
+    status,
+    date: clockAdapter.localDateKey(new Date(occ.scheduledAt), timeZoneId),
+    familyMemberId: med.familyMemberId,
+    skipReason: occ.skipReason
+  };
+}
+
+/** فاز ۱ + بخش ۴ (sweepMissed): نتیجه‌ی ensureHorizonForAll و sweepMissed را
+ *  یک‌جا در AppState ادغام می‌کند — occurrenceهای جدید اضافه، occurrenceهای
+ *  missed جایگزین نسخه‌ی قبلی خودشان می‌شوند + دوباره‌نویسی موازی (dual-write)
+ *  به doseLogs قدیمی. فاز ۵ (پاک‌سازی): ReportsView دیگر از doseLogs نمی‌خواند
+ *  (مستقیماً از doseOccurrences می‌خواند) — این نوشتن فقط برای سازگاری
+ *  Header.tsx باقی مانده، که طبق جدول بخش ۱۳ خارج از دامنه‌ی این مهاجرت ماند. */
+function applySweepAndGeneration(
+  prev: AppState,
+  created: DoseOccurrence[],
+  sweepResults: ReturnType<ResolverEngine['sweepMissed']>
+): AppState {
+  if (created.length === 0 && sweepResults.length === 0) return prev;
+  const timeZoneId = clockAdapter.currentTimeZoneId();
+  const medById = new Map(prev.medications.map(m => [m.id, m]));
+  const missedLogs = sweepResults
+    .map(r => {
+      const med = medById.get(r.occurrence.medId);
+      return med ? occurrenceToLegacyDoseLog(r.occurrence, med, 'missed', timeZoneId) : null;
+    })
+    .filter((l): l is NonNullable<typeof l> => l !== null);
+
+  const updatedOccurrences = prev.doseOccurrences.map(o => {
+    const swept = sweepResults.find(r => r.occurrence.id === o.id);
+    return swept ? swept.occurrence : o;
+  });
+
+  return {
+    ...prev,
+    doseOccurrences: [...updatedOccurrences, ...created],
+    doseLogs: [...missedLogs, ...prev.doseLogs]
+  };
+}
+
+/** بخش ۱۶ («تغییر Time Zone»): برخلاف نسخه‌ی قبلی (که فقط یک‌بار، بلافاصله
+ *  بعد از migration، چک می‌شد و از آن به بعد تا ابد اجرا نمی‌شد چون به
+ *  hasMigratedOccurrences وابسته بود که فقط یک‌بار در کل عمر اپ مقدارش
+ *  عوض می‌شود)، این تابع از هر دو نقطه‌ی resume و تیک دوره‌ای sweep صدا زده
+ *  می‌شود — یعنی تغییر واقعی تایم‌زون دستگاه (مثلاً وسط یک سفر) در طول یک
+ *  سشن زنده هم تشخیص داده می‌شود، نه فقط در اولین اجرای تاریخ اپ.
+ *  occurrenceهای pending آینده که regenerate می‌شوند، قبل از حذف از state
+ *  باید notificationهای native‌شان هم cancel شود — وگرنه یک نوتیفیکیشن
+ *  «یتیم» با ساعت تایم‌زون قدیمی همچنان در سیستم‌عامل شلیک می‌شود، درحالی‌که
+ *  occurrence متناظرش دیگر در state وجود ندارد. */
+function checkTimezoneChange(prev: AppState): { state: AppState; removedOccurrences: DoseOccurrence[] } {
+  if (!prev.hasMigratedOccurrences) return { state: prev, removedOccurrences: [] };
+  const currentTz = clockAdapter.currentTimeZoneId();
+  if (!prev.lastKnownTimeZoneId) {
+    return { state: { ...prev, lastKnownTimeZoneId: currentTz }, removedOccurrences: [] };
+  }
+  if (prev.lastKnownTimeZoneId === currentTz) {
+    return { state: prev, removedOccurrences: [] };
+  }
+
+  const { toRemoveIds, toAdd } = occurrenceGenerator.regenerateFuturePendingOnTimezoneChange(prev.medications, prev.doseOccurrences, DEFAULT_HORIZON_DAYS);
+  const removedOccurrences = prev.doseOccurrences.filter(o => toRemoveIds.includes(o.id));
+
+  return {
+    state: {
+      ...prev,
+      doseOccurrences: [...prev.doseOccurrences.filter(o => !toRemoveIds.includes(o.id)), ...toAdd],
+      lastKnownTimeZoneId: currentTz
+    },
+    removedOccurrences
+  };
+}
 
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadAppState());
@@ -62,19 +180,20 @@ export default function App() {
   // Set when a reminder notification wants a specific medication's card pulled to
   // the front of the home stack.
   const [priorityMedId, setPriorityMedId] = useState<string | null>(null);
-  const [notificationError, setNotificationError] = useState<string | null>(null);
 
-  // تیکه ۱۰ — «الان»ی که پنل خانه با آن رندر می‌شود. عمداً یک state است، نه
-  // `Date.now()` درجای رندر: هر بار که واقعاً چیزی می‌تواند عوض شده باشد
-  // (sync افق، ثبت یک دوز، عبور از یک پله‌ی escalation) یک‌بار به‌روز می‌شود —
-  // جایگزین تیک ۴ثانیه‌ای قدیمی داخل StackedCards (بخش ۱۷.۵).
-  const [homeQueueNow, setHomeQueueNow] = useState<number>(() => Date.now());
-  const refreshHomeQueue = useCallback(() => setHomeQueueNow(Date.now()), []);
+  // نگه‌داشتن آخرین نسخه‌ی هندلرهای «مصرف کردم»/«رد کردن» برای listener دکمه‌های
+  // نوتیفیکیشن — چون این هندلرها هر رندر از نو ساخته می‌شوند و نباید effect
+  // زیر (که فقط یک‌بار subscribe می‌شود) با هر رندر دوباره subscribe/unsubscribe
+  // کند. مقدار ref هر رندر (نه در یک effect) به‌روز می‌شود تا همیشه تازه باشد.
+  const notificationActionHandlersRef = useRef<{
+    updateStatus: (occurrenceId: string, status: 'taken' | 'snoozed') => void;
+    skipDose: (occurrenceId: string, reason: SkipReason) => void;
+  }>({ updateStatus: () => {}, skipDose: () => {} });
 
   // Ask for notification permission early — covers the real scheduled dose-time
   // alerts and the three-reminder missed-dose escalation, both native via Capacitor.
   useEffect(() => {
-    requestNotificationPermissions().catch(() => setNotificationError('دسترسی اعلان‌ها برقرار نشد. از تنظیمات دستگاه، اعلان‌ها و آلارم دقیق را فعال کنید.'));
+    requestNotificationPermissions();
   }, []);
 
   // Bring the user back to the home tab with this medication's card in front —
@@ -84,29 +203,31 @@ export default function App() {
     setPriorityMedId(medId);
   }, []);
 
-  const openReminderForOccurrence = useCallback((occurrenceId: string) => {
-    const occurrence = resolverDeps.occurrenceRepository.getById(occurrenceId);
-    if (occurrence) openReminderForMed(occurrence.medicationId);
-  }, [openReminderForMed]);
-
   // Tapping an actual scheduled dose-time notification (native) opens the app on
   // that exact medication's card, same as the in-app "نوبت بعدی" row.
   useEffect(() => {
     let cleanup: (() => void) | undefined;
     let cancelled = false;
     (async () => {
-      const remove = await addNotificationTapListener(({ occurrenceId, actionId }) => {
-        if (actionId === 'taken') {
-          resolveOccurrence(occurrenceId, 'taken', resolverDeps);
-          refreshHomeQueue();
+      const remove = await addNotificationTapListener((occurrenceId, medId, actionId) => {
+        // سه دکمه‌ی روی خودِ نوتیفیکیشن مستقیماً اعمال می‌شوند — بدون باز کردن
+        // اپ. لمس خودِ نوتیفیکیشن (بدون actionId) مثل قبل فقط کارت را جلو می‌آورد.
+        if (actionId === DOSE_ACTION_TAKEN && occurrenceId) {
+          notificationActionHandlersRef.current.updateStatus(occurrenceId, 'taken');
           return;
         }
-        if (actionId === 'later') {
-          snoozeOccurrence(occurrenceId, resolverDeps);
-          refreshHomeQueue();
+        if (actionId === DOSE_ACTION_SNOOZE && occurrenceId) {
+          notificationActionHandlersRef.current.updateStatus(occurrenceId, 'snoozed');
           return;
         }
-        openReminderForOccurrence(occurrenceId);
+        if (actionId === DOSE_ACTION_SKIP && occurrenceId) {
+          // بدون بازکردن Bottom Sheet انتخاب دلیل — چون از داخل نوتیفیکیشن
+          // امکان انتخاب نیست، دلیل پیش‌فرض «زمان مصرف مناسب نبود» ثبت می‌شود
+          // که (برخلاف بقیه‌ی دلایل) خودِ دارو را غیرفعال نمی‌کند.
+          notificationActionHandlersRef.current.skipDose(occurrenceId, 'timing');
+          return;
+        }
+        openReminderForMed(medId);
       });
       if (cancelled) {
         remove?.();
@@ -118,49 +239,88 @@ export default function App() {
       cancelled = true;
       cleanup?.();
     };
-  }, [openReminderForOccurrence]);
+  }, [openReminderForMed]);
 
-  // تیکه ۸ — DESIGN.md بخش ۳ («چه زمانی Occurrence Generator صدا زده می‌شه»):
-  // در mount، و هر بار state.medications عوض بشه (افزودن/ویرایش/حذف/toggle —
-  // همه‌شون این آرایه رو عوض می‌کنن)، migrateLegacyData (idempotent، تیکه ۶)
-  // و به‌دنبالش ensureHorizon دوباره اجرا می‌شن تا افق rolling occurrenceهای
-  // pending همیشه پر بمونه — پیش‌نیازیه که Occurrence Resolver
-  // زیر بتونن واقعاً یک occurrence برای resolve کردن پیدا کنن.
+  // فاز ۱ سند طراحی — اسکریپت مهاجرت یک‌باره legacy→occurrence، فقط یک‌بار در
+  // اولین باز شدن اپ بعد از آپدیت. idempotent — اجرای دوباره روی داده‌ای که
+  // قبلاً hasMigratedOccurrences=true دارد، هیچ اثری ندارد.
   useEffect(() => {
-    syncOccurrences(state.medications);
-    void syncPendingNotifications().catch(() => setNotificationError('زمان‌بندی اعلان‌ها انجام نشد. مجوز اعلان و آلارم دقیق دستگاه را بررسی کنید.'));
-    // افق تازه تولید/به‌روز شد — صف خانه باید دوباره از Repository خوانده شود.
-    // (این effect بعد از رندر اجرا می‌شود، پس بدون این فراخوانی، اولین رندرِ
-    // بعد از mount هنوز صف خالی می‌دید.)
-    refreshHomeQueue();
-  }, [state.medications, refreshHomeQueue]);
+    if (state.hasMigratedOccurrences) return;
+    const { createdOccurrences } = runLegacyToOccurrenceMigration(state, clockAdapter);
+    setState(prev => ({
+      ...prev,
+      doseOccurrences: [...prev.doseOccurrences, ...createdOccurrences],
+      hasMigratedOccurrences: true,
+      lastKnownTimeZoneId: clockAdapter.currentTimeZoneId()
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Escalation reminders are one-shot (بخش ۳ در NotificationEngine) و برای
-  // «فردا» فقط وقتی درست زمان‌بندی می‌شن که این تابع دوباره صدا زده بشه. اگه
-  // اپ کل شب بسته باشه، به‌محض resume (باز شدن دوباره) یک‌بار sync می‌کنیم تا
-  // برنامه‌ی روز جدید فوراً جایگزین برنامه‌ی دیروز بشه.
+  // فاز ۱ — بخش ۳ (Occurrence Generator): هر بار لیست داروها عوض می‌شود
+  // (اضافه/ویرایش/حذف/toggle)، افق rolling برای occurrenceهای جدید کامل
+  // می‌شود — idempotent، فقط occurrenceهای واقعاً جدید اضافه می‌شوند.
+  useEffect(() => {
+    if (!state.hasMigratedOccurrences) return;
+    const created = occurrenceGenerator.ensureHorizonForAll(state.medications, state.doseOccurrences, DEFAULT_HORIZON_DAYS);
+    if (created.length > 0) {
+      setState(prev => ({ ...prev, doseOccurrences: [...prev.doseOccurrences, ...created] }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.medications, state.hasMigratedOccurrences]);
+
+  // بخش ۶ سند (NotificationEngine): با تغییر occurrenceها/داروها، هر
+  // occurrence pending دقیقاً diff می‌شود (نه cancel-all + reschedule) و فقط
+  // notificationIdهای واقعاً تغییرکرده در state ادغام می‌شوند.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const updated = await syncOccurrenceNotifications(state.doseOccurrences, state.medications);
+      if (cancelled || updated.length === 0) return;
+      setState(prev => ({
+        ...prev,
+        doseOccurrences: prev.doseOccurrences.map(o => updated.find(u => u.id === o.id) || o)
+      }));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.doseOccurrences, state.medications]);
+
+  // بخش ۱۶ (ریبوت گوشی / Force Stop کاهش‌اثر): به‌محض resume، افق را کامل و
+  // sweepMissed را روی کل backlog اجرا می‌کنیم تا برنامه‌ی روز جدید فوراً
+  // جایگزین شود و دوزهای ازدست‌رفته‌ی گذشته گم نشوند.
   useEffect(() => {
     let removeListener: (() => void) | undefined;
     let cancelled = false;
 
     (async () => {
-      try {
-        const handle = await CapacitorApp.addListener('resume', () => {
-          const medications = state.medications;
-          // تیکه ۸ — DESIGN.md بخش ۳: «در باز شدن اپ / resume» صراحتاً یکی از
-          // نقاط صدا زدن Occurrence Generator است.
-          syncOccurrences(medications);
-          void syncPendingNotifications().catch(() => setNotificationError('زمان‌بندی اعلان‌ها انجام نشد. مجوز اعلان و آلارم دقیق دستگاه را بررسی کنید.'));
-          refreshHomeQueue();
+      const remove = await appLifecycleAdapter.onResume(() => {
+        // بحرانی: محاسبه باید داخل خودِ functional updater روی prev واقعی
+        // انجام شود، نه روی یک snapshot از پیش گرفته‌شده. اگر این
+        // callback با یک effect دیگر (مثلاً migration در همان mount) در یک
+        // batch هم‌زمان بشود، یک setState با «مقدار ثابتِ از‌قبل‌محاسبه‌شده»
+        // (نه تابعی) می‌تواند نتیجه‌ی آن effect دیگر را کامل overwrite کند —
+        // چون prev واقعی در لحظه‌ی اعمال را نادیده می‌گیرد. با محاسبه‌ی کامل
+        // داخل «prev =>» تضمین می‌شود همیشه روی جدیدترین state واقعی اعمال شود.
+        let sweptForNotifications: ReturnType<typeof resolverEngine.sweepMissed> = [];
+        let tzRemovedForNotifications: DoseOccurrence[] = [];
+
+        setState(prev => {
+          const created = occurrenceGenerator.ensureHorizonForAll(prev.medications, prev.doseOccurrences, DEFAULT_HORIZON_DAYS);
+          const sweepResults = resolverEngine.sweepMissed(prev.doseOccurrences, prev.medications);
+          sweptForNotifications = sweepResults;
+          const afterSweep = applySweepAndGeneration(prev, created, sweepResults);
+          const tzResult = checkTimezoneChange(afterSweep);
+          tzRemovedForNotifications = tzResult.removedOccurrences;
+          return pruneOldData(tzResult.state);
         });
-        if (cancelled) {
-          handle.remove();
-        } else {
-          removeListener = () => handle.remove();
-        }
-      } catch (e) {
-        // Not running inside a native Capacitor shell (e.g. plain browser) — safe to ignore.
-        console.warn('Capacitor app resume listener unavailable:', e);
+
+        sweptForNotifications.forEach(r => { cancelOccurrenceNotifications(r.occurrence); });
+        tzRemovedForNotifications.forEach(o => { cancelOccurrenceNotifications(o); });
+      });
+      if (cancelled) {
+        remove();
+      } else {
+        removeListener = remove;
       }
     })();
 
@@ -168,7 +328,8 @@ export default function App() {
       cancelled = true;
       removeListener?.();
     };
-  }, [refreshHomeQueue, state.medications]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep the latest UI/nav state in a ref so the native back-button
   // listener (registered once) always sees fresh values.
@@ -231,50 +392,95 @@ export default function App() {
   };
 
   // Handles both card actions from StackedCards: «مصرف شد» (status: 'taken') و
-  // «بعداً» (status: 'snoozed'). نقش «بعداً» عمداً محدوده به همین دو کار:
-  // (۱) کارت رو در صف خانه به عقب می‌بره (به‌صورت دائم، نه با تایمر — رفتار
-  // فعلی در StackedCards)، (۲) یک لاگ با وضعیت 'snoozed' ثبت می‌کنه (برای
-  // گزارش‌گیری، بخش ۵). هیچ کدوم این‌ها به‌عنوان «resolved» شناخته نمی‌شن (نگاه
-  // کن به Occurrence Resolver)، پس «بعداً» زدن
-  // هیچ تاثیری روی زمان‌بندی سه‌گانه‌ی نوتیفیکیشن نداره — فقط 'taken'/'skipped'/
-  // 'missed' (این آخری خودکار، توسط checkMissedDoses) اون‌ها رو کنسل و برای
-  // فردا reschedule می‌کنن. `slotIndex` مشخص می‌کنه دقیقاً کدوم وعده (صبح/
-  // ظهر/شب و...) این اقدام مربوط بهشه — همین فیلده که باعث می‌شه ثبت یک وعده
-  // روی بقیه‌ی وعده‌های همون روز اثر نذاره.
-  const handleUpdateDoseStatus = (occurrenceId: string, status: DoseStatus) => {
-    const occurrence = resolverDeps.occurrenceRepository.getById(occurrenceId);
-    if (!occurrence) return;
-    const med = state.medications.find(m => m.id === occurrence.medicationId);
-    if (!med) return;
+  // «بعداً» (status: 'snoozed').
+  // بخش ۴ سند (ResolverEngine): تنها مسیر مجاز resolve/snooze یک occurrence.
+  // «مصرف شد»/«بعداً» با occurrenceId می‌آید، نه medId+slotIndex (بخش ۱۳).
+  // DoseLog قدیمی هنوز موازی نوشته می‌شود، اما فقط برای سازگاری Header.tsx
+  // (بخش ۱۳ - خارج از دامنه‌ی این مهاجرت)؛ ReportsView دیگر از آن نمی‌خواند
+  // (فاز ۵ - پاک‌سازی).
+  const handleUpdateDoseStatus = (occurrenceId: string, status: 'taken' | 'snoozed') => {
+    const occ = state.doseOccurrences.find(o => o.id === occurrenceId);
+    const med = occ ? state.medications.find(m => m.id === occ.medId) : undefined;
+    if (!occ || !med) return;
 
-    if (status === 'taken') {
-      resolveOccurrence(occurrenceId, 'taken', resolverDeps);
-    } else if (status === 'snoozed') {
-      snoozeOccurrence(occurrenceId, resolverDeps);
-    }
-
-    if (status === 'taken' && med.remainingCount > 0) {
+    if (status === 'snoozed') {
+      const { occurrence: updated } = resolverEngine.snooze(occ);
       setState(prev => ({
         ...prev,
-        medications: prev.medications.map(m => m.id === med.id
-          ? { ...m, remainingCount: m.remainingCount - 1 }
-          : m)
+        doseOccurrences: prev.doseOccurrences.map(o => (o.id === updated.id ? updated : o))
       }));
+      return;
     }
-    refreshHomeQueue();
+
+    const { occurrence: updated } = resolverEngine.resolve(occ, 'taken');
+    const timeZoneId = clockAdapter.currentTimeZoneId();
+    const newLog = occurrenceToLegacyDoseLog(updated, med, 'taken', timeZoneId);
+    const updatedMeds = med.remainingCount > 0
+      ? state.medications.map(m => (m.id === med.id ? { ...m, remainingCount: m.remainingCount - 1 } : m))
+      : state.medications;
+
+    setState(prev => ({
+      ...prev,
+      medications: updatedMeds,
+      doseOccurrences: prev.doseOccurrences.map(o => (o.id === updated.id ? updated : o)),
+      doseLogs: [newLog, ...prev.doseLogs]
+    }));
+
+    cancelOccurrenceNotifications(updated).then(withCancelled => {
+      setState(prev => ({
+        ...prev,
+        doseOccurrences: prev.doseOccurrences.map(o => (o.id === withCancelled.id ? withCancelled : o))
+      }));
+    });
   };
 
-  // Resolver تنها منبع transition به missed است؛ دیگر DoseLog legacy تولید
-  // نمی‌شود و dual-write در این مرحله کامل حذف شده است.
+  notificationActionHandlersRef.current.updateStatus = handleUpdateDoseStatus;
+
+  // بخش ۴ و ۱۶ (Missed): فقط ResolverEngine.sweepMissed مجاز به این
+  // transition است — روی کل backlog pending اجرا می‌شود، نه فقط «امروز»
+  // (رفع باگ «اگر گوشی چند روز بدون باز شدن اپ بماند، دوزهای گذشته هرگز
+  // missed علامت نمی‌خورند»، چون occurrenceهای rolling از قبل در حافظه‌اند).
+  // pruning (بخش ۱۵) هر ۳۰ ثانیه لازم نیست — فقط یک‌بار در روز کافی است؛ با
+  // یک ref تاریخ محلیِ آخرین pruning را نگه می‌داریم تا سشن‌های طولانی‌مدت
+  // (اپی که بدون بسته شدن روزها باز می‌ماند) هم پوشش داده شوند، نه فقط mount/resume.
+  const lastPruneDateRef = useRef<string>(clockAdapter.localDateKey(clockAdapter.now(), clockAdapter.currentTimeZoneId()));
+
   useEffect(() => {
-    const checkMissedDoses = () => {
-      const missedOccurrences = sweepMissed(Date.now(), resolverDeps);
-      if (missedOccurrences.length > 0) refreshHomeQueue();
+    const sweep = () => {
+      // بحرانی: مثل resume، محاسبه باید داخل خودِ functional updater روی prev
+      // واقعی انجام شود، نه روی یک snapshot از پیش گرفته‌شده. sweep() همیشه بلافاصله
+      // در mount هم صدا زده می‌شود (خط پایین) — دقیقاً همان لحظه‌ای که effect
+      // migration هم ممکن است هنوز نتیجه‌اش commit نشده باشد؛ یک setState با
+      // مقدار ثابتِ از‌قبل‌محاسبه‌شده (نه تابعی) می‌توانست نتیجه‌ی migration
+      // (ازجمله خودِ پرچم hasMigratedOccurrences) را completely overwrite کند.
+      const todayKey = clockAdapter.localDateKey(clockAdapter.now(), clockAdapter.currentTimeZoneId());
+      const shouldPrune = todayKey !== lastPruneDateRef.current;
+
+      let sweptForNotifications: ReturnType<typeof resolverEngine.sweepMissed> = [];
+      let tzRemovedForNotifications: DoseOccurrence[] = [];
+
+      setState(prev => {
+        const created = occurrenceGenerator.ensureHorizonForAll(prev.medications, prev.doseOccurrences, DEFAULT_HORIZON_DAYS);
+        const sweepResults = resolverEngine.sweepMissed(prev.doseOccurrences, prev.medications);
+        sweptForNotifications = sweepResults;
+        const afterSweep = applySweepAndGeneration(prev, created, sweepResults);
+        // بخش ۱۶ («تغییر Time Zone»): هر تیک sweep (هر ۳۰ ثانیه) هم چک می‌شود —
+        // نه فقط mount/resume — تا تغییر واقعی تایم‌زون وسط یک سشن زنده و طولانی
+        // هم به‌موقع تشخیص داده شود.
+        const tzResult = checkTimezoneChange(afterSweep);
+        tzRemovedForNotifications = tzResult.removedOccurrences;
+        return shouldPrune ? pruneOldData(tzResult.state) : tzResult.state;
+      });
+
+      if (shouldPrune) lastPruneDateRef.current = todayKey;
+      sweptForNotifications.forEach(r => { cancelOccurrenceNotifications(r.occurrence); });
+      tzRemovedForNotifications.forEach(o => { cancelOccurrenceNotifications(o); });
     };
-    checkMissedDoses();
-    const id = setInterval(checkMissedDoses, MISSED_CHECK_INTERVAL_MS);
+
+    sweep();
+    const id = setInterval(sweep, SWEEP_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [refreshHomeQueue]);
+  }, []);
 
   const handleToggleMedActive = (medId: string) => {
     setState(prev => ({
@@ -295,11 +501,13 @@ export default function App() {
   // با pauseReason مخصوص همون دلیل، تا در لیست داروها «در انتظار تهیه» با
   // «غیرفعال»ِ معمولی قاطی نشه. برای «زمان مصرف مناسب نیست» دارو فعال می‌مونه.
   const handleSkipDose = (occurrenceId: string, reason: SkipReason) => {
-    const occurrence = resolverDeps.occurrenceRepository.getById(occurrenceId);
-    if (!occurrence) return;
-    const med = state.medications.find(m => m.id === occurrence.medicationId);
-    if (!med) return;
-    resolveOccurrence(occurrenceId, 'skipped', resolverDeps, { skipReason: reason });
+    const occ = state.doseOccurrences.find(o => o.id === occurrenceId);
+    const med = occ ? state.medications.find(m => m.id === occ.medId) : undefined;
+    if (!occ || !med) return;
+
+    const { occurrence: updated } = resolverEngine.resolve(occ, 'skipped', reason);
+    const timeZoneId = clockAdapter.currentTimeZoneId();
+    const newLog = occurrenceToLegacyDoseLog(updated, med, 'skipped', timeZoneId);
 
     const pauseReasonForSkip: Record<SkipReason, Medication['pauseReason']> = {
       timing: undefined,
@@ -308,14 +516,25 @@ export default function App() {
       out_of_stock: 'awaiting_refill'
     };
     const shouldDeactivate = reason !== 'timing';
+
     setState(prev => ({
       ...prev,
       medications: shouldDeactivate
         ? prev.medications.map(m => m.id === med.id ? { ...m, isActive: false, pauseReason: pauseReasonForSkip[reason] } : m)
-        : prev.medications
+        : prev.medications,
+      doseOccurrences: prev.doseOccurrences.map(o => (o.id === updated.id ? updated : o)),
+      doseLogs: [newLog, ...prev.doseLogs]
     }));
-    refreshHomeQueue();
+
+    cancelOccurrenceNotifications(updated).then(withCancelled => {
+      setState(prev => ({
+        ...prev,
+        doseOccurrences: prev.doseOccurrences.map(o => (o.id === withCancelled.id ? withCancelled : o))
+      }));
+    });
   };
+
+  notificationActionHandlersRef.current.skipDose = handleSkipDose;
 
   // فقط برای دلیل «زمان مصرف مناسب نیست» — پنل ویرایش همین دارو رو مستقیماً
   // روی بخش «زمان مصرف» باز می‌کنه تا کاربر ساعت یادآوری رو عوض کنه.
@@ -385,37 +604,24 @@ export default function App() {
     }));
   };
 
-  // تیکه ۱۰ — تنها محاسبه‌ی «کدام کارت‌ها الان دیده شوند» در کل اپ
-  // (DESIGN.md بخش ۱۷.۲/۱۷.۶ — منبع واحد). StackedCards دیگر خودش چیزی
-  // نمی‌سازد، فقط همین خروجی را رندر می‌کند.
-  const homeQueue = React.useMemo(() => homeCards(homeQueueNow, homeQueueDeps), [homeQueueNow]);
-  const homeToday = React.useMemo(() => todaySummary(homeQueueNow, homeQueueDeps), [homeQueueNow]);
-
-  // بخش ۱۷.۵ — به‌جای تایمر دوره‌ای، دقیقاً یک setTimeout روی زودترین مرزِ
-  // واقعی (ورود کارت بعدی به پنجره‌ی فعال‌سازی، یا عبور یک کارت از یک پله‌ی
-  // escalation). اگر مرزی در پیش نباشد، هیچ تایمری اصلاً ساخته نمی‌شود.
-  useEffect(() => {
-    const at = nextTransitionAt(homeQueueNow, homeQueueDeps);
-    if (at === null) return;
-    const delay = Math.max(1000, at - Date.now() + 250);
-    const id = setTimeout(refreshHomeQueue, delay);
-    return () => clearTimeout(id);
-  }, [homeQueueNow, refreshHomeQueue]);
-
   // Filter medications for the app
   const profileMeds = state.medications;
   const profileLogs = state.doseLogs;
+  const profileOccurrences = state.doseOccurrences;
 
   const activeMedsCount = profileMeds.filter(m => m.isActive).length;
   const takenCount = profileLogs.filter(l => l.status === 'taken').length;
   const totalLogs = profileLogs.length;
   const adherenceRate = totalLogs > 0 ? Math.round((takenCount / totalLogs) * 100) : 98;
 
-  // آمار drawer از همان occurrenceهای روز محلی می‌آید؛ دوباره از روی UTC/date-log
-  // محاسبه نمی‌کنیم تا با HomeQueue/Reports در نیمه‌شب اختلاف نداشته باشد.
-  const takenTodayCount = homeToday.taken;
-  const totalTodayCount = homeToday.total;
-  const remainingTodayCount = Math.max(0, totalTodayCount - homeToday.resolved);
+  // Today's taken/remaining medication stats (used by the drawer's share action)
+  // بخش ۱۶ (نیمه‌شب) — «امروز» فقط از ClockAdapter، نه toISOString خام.
+  const todayStr = clockAdapter.localDateKey(clockAdapter.now(), clockAdapter.currentTimeZoneId());
+  const todayLogs = profileLogs.filter(l => l.date === todayStr);
+  const activeMedications = profileMeds.filter(m => m.isActive);
+  const takenTodayCount = activeMedications.filter(m => todayLogs.some(l => l.medId === m.id && l.status === 'taken')).length;
+  const totalTodayCount = activeMedications.length;
+  const remainingTodayCount = Math.max(0, totalTodayCount - takenTodayCount);
 
   // Hardware back-button handling (Android via Capacitor):
   // - Closes any open overlay (exit dialog, settings, add wizard, menu) first
@@ -495,7 +701,6 @@ export default function App() {
   // 3. Main Application Render
   return (
     <div className={`min-h-screen pb-28 bg-gradient-to-br from-[#E0F2F1] via-[#F0FDF4] to-[#E0F7FA] dark:from-slate-950 dark:via-teal-950/40 dark:to-slate-900 text-[#1A2E35] dark:text-slate-100 relative overflow-x-hidden ${FONT_SIZE_CLASS[state.fontSize]}`}>
-      {notificationError && <button type="button" onClick={() => setNotificationError(null)} className="fixed top-2 left-2 right-2 z-[60] rounded-xl bg-rose-50 text-rose-700 border border-rose-200 px-3 py-2 text-xs font-bold text-right">{notificationError}</button>}
       {/* Background Mesh Orbs for Frosted Glass Effect */}
       <div className="fixed top-[-100px] left-[-100px] w-80 h-80 bg-teal-300 dark:bg-teal-600/20 rounded-full mix-blend-multiply dark:mix-blend-lighten filter blur-3xl opacity-40 pointer-events-none z-0" />
       <div className="fixed bottom-[100px] right-[-50px] w-96 h-96 bg-blue-300 dark:bg-blue-600/20 rounded-full mix-blend-multiply dark:mix-blend-lighten filter blur-3xl opacity-40 pointer-events-none z-0" />
@@ -504,9 +709,8 @@ export default function App() {
       {/* Top Header matching Image 1 */}
       <Header
         onOpenMenu={() => setIsMenuOpen(true)}
-        nextCard={homeQueue[0] ?? null}
-        totalToday={homeToday.total}
-        resolvedToday={homeToday.resolved}
+        medications={profileMeds}
+        logs={profileLogs}
         onOpenReminder={openReminderForMed}
       />
 
@@ -533,11 +737,8 @@ export default function App() {
       <main className="container max-w-3xl mx-auto px-3 sm:px-6 pt-4 relative z-10">
         {state.currentTab === 'today' && (
           <StackedCards
-            cards={homeQueue}
-            takenCards={homeToday.takenCards}
-            totalToday={homeToday.total}
-            resolvedToday={homeToday.resolved}
             medications={profileMeds.filter(m => m.isActive)}
+            occurrences={profileOccurrences}
             onUpdateStatus={handleUpdateDoseStatus}
             userName={state.userName}
             priorityMedId={priorityMedId}
@@ -563,8 +764,7 @@ export default function App() {
         {state.currentTab === 'reports' && (
           <ReportsView
             medications={profileMeds}
-            logs={profileLogs}
-            queryService={occurrenceQueryService}
+            occurrences={profileOccurrences}
           />
         )}
 

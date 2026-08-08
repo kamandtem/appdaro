@@ -1,11 +1,15 @@
-import { AppState, FamilyMember, Medication, DoseLog } from '../types';
-import { INITIAL_FAMILY_MEMBERS, INITIAL_MEDICATIONS, INITIAL_DOSE_LOGS } from '../data/initialData';
+// storageService — بخش ۱۳ سند طراحی: بخش خامِ خواندن/نوشتنِ کل AppState حالا
+// از طریق LocalStoragePersistenceAdapter انجام می‌شود (تفکیک «منطق» از
+// «پلاگین/storage»)؛ این فایل فقط شکل AppState را می‌داند، نه جزئیات
+// localStorage خام.
 
-const STORAGE_KEY = 'darooto_app_state_v1';
+import { AppState } from '../types';
+import { INITIAL_FAMILY_MEMBERS, INITIAL_MEDICATIONS, INITIAL_DOSE_LOGS, INITIAL_DOSE_OCCURRENCES } from '../data/initialData';
+import { persistenceAdapter, STORAGE_KEY } from '../adapters/LocalStoragePersistenceAdapter';
 
 export function loadAppState(): AppState {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = persistenceAdapter.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
       return {
@@ -14,6 +18,9 @@ export function loadAppState(): AppState {
         selectedProfileId: parsed.selectedProfileId || 'me',
         medications: parsed.medications || INITIAL_MEDICATIONS,
         doseLogs: parsed.doseLogs || INITIAL_DOSE_LOGS,
+        doseOccurrences: parsed.doseOccurrences || INITIAL_DOSE_OCCURRENCES,
+        hasMigratedOccurrences: parsed.hasMigratedOccurrences ?? false,
+        lastKnownTimeZoneId: parsed.lastKnownTimeZoneId,
         isDarkMode: parsed.isDarkMode || false,
         hasSeenOnboarding: parsed.hasSeenOnboarding ?? false,
         hasSeenCardGestureTutorial: parsed.hasSeenCardGestureTutorial ?? false,
@@ -33,6 +40,8 @@ export function loadAppState(): AppState {
     selectedProfileId: 'me',
     medications: INITIAL_MEDICATIONS,
     doseLogs: INITIAL_DOSE_LOGS,
+    doseOccurrences: INITIAL_DOSE_OCCURRENCES,
+    hasMigratedOccurrences: false,
     isDarkMode: false,
     hasSeenOnboarding: false,
     hasSeenCardGestureTutorial: false,
@@ -44,11 +53,7 @@ export function loadAppState(): AppState {
 }
 
 export function saveAppState(state: AppState): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (e) {
-    console.error('Failed to save state to localStorage', e);
-  }
+  persistenceAdapter.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 /**

@@ -1,143 +1,74 @@
-// DoseOccurrenceRepository (DESIGN.md بخش ۸) — دقیقاً همون ۶ متدی که سند
-// امضاشون رو داده، به‌علاوه‌ی `pruneOlderThan` که بخش ۸ به‌صورت مجزا (نه توی
-// بلوک کد امضا، بلکه توی توضیح «استراتژی نگه‌داری») مسئولیتش رو به همین لایه
-// داده: «Repository مسئول pruning است». چون بخش ۱۵ (ریسک‌ها) صریحاً می‌گه
-// این استراتژی باید «از همان فاز ۱... نه به‌عنوان کار بعدی» وجود داشته باشه،
-// همینجا (همون تیکه‌ای که Repository رو می‌سازه) پیاده شده، نه گذاشته شده
-// برای یک تیکه‌ی جدا.
+// DoseOccurrenceRepository — بخش ۸ سند طراحی.
+//
+// این Repository به‌جای نگه‌داشتن state خودش، روی آرایه‌ای از DoseOccurrence که
+// از AppState (منبع واحد state در این اپ React) گرفته می‌شود کار می‌کند —
+// یعنی wrapper نازک با کوئری‌های استاندارد، نه یک DB مستقل. این تصمیم عمدی است:
+// اپ همچنان از یک useState واحد در App.tsx تغذیه می‌شود (بخش ۹ - Adapter Layer
+// روی همین واقعیت طراحی شده)، ولی هیچ کامپوننتی دیگر مستقیماً آرایه‌ی خام را
+// فیلتر نمی‌کند — همه از متدهای این کلاس عبور می‌کنند، تا منطق کوئری یک‌جا
+// باشد (بخش ۰ - ریشه‌ی واقعی مشکل: منابع محاسبه‌ی پراکنده).
 
-import { DoseHistoryRecord, DoseOccurrence, Instant, MedicationForm, OccurrenceId, OccurrenceStatus, SkipReason } from '../types';
-import { PersistenceAdapter } from '../adapters/LocalStoragePersistenceAdapter';
+import { DoseOccurrence, OccurrenceStatus } from '../types';
 
-export interface DoseOccurrenceRepository {
-  /** کلید طبیعی طبق DESIGN.md بخش ۳: (medicationId, slotId, scheduledAt).
-   *  اگه رکوردی با همین کلید از قبل هست، هیچ‌کاری نمی‌کنه و 'exists'
-   *  برمی‌گردونه — حتی اگه اون رکورد از این occurrence جدید متفاوت باشه
-   *  (مثلاً status فرق کنه)؛ رکورد موجود دست‌نخورده می‌مونه (immutability
-   *  rule). */
-  upsertIfAbsent(occ: DoseOccurrence): 'created' | 'exists';
-  getById(id: OccurrenceId): DoseOccurrence | null;
-  /** برای sweepMissed (ResolverEngine، تیکه ۷) — کل backlog pending‌ای که
-   *  ددلاینش گذشته، نه فقط «امروز». */
-  findPendingWithDeadlineBefore(now: Instant): DoseOccurrence[];
-  findByMedication(medId: string, range?: { from: Instant; to: Instant }): DoseOccurrence[];
-  findByDateRange(range: { from: Instant; to: Instant }): DoseOccurrence[];
-  /** فقط از طریق ResolverEngine/NotificationEngine صدا زده بشه (طبق تأکید
-   *  صریح سند) — خودِ این متد enforce نمی‌کنه، چون این یک محدودیت معماری/
-   *  انضباطی روی caller هاست، نه چیزی که این لایه بتونه از نظر type-system
-   *  تضمین کنه. */
-  update(occ: DoseOccurrence): void;
-  /** استراتژی نگه‌داری بخش ۸: occurrenceهای ترمینال (taken/skipped/missed/
-   *  canceled) که `scheduledAt`شون قدیمی‌تر از `thresholdInstant`ه، به
-   *  `DoseHistoryRecord` مسطح فشرده و از جدول اصلی حذف می‌شن — تا حجم
-   *  occurrence نامحدود رشد نکنه (بخش ۱۵). `resolveMedication` برای پرکردن
-   *  فیلدهای نمایشی (medName/medForm/medDose/familyMemberId) لازمه، چون
-   *  خودِ DoseOccurrence این‌ها رو denormalize نکرده — این تابع inject
-   *  می‌شه تا این Repository مستقیماً به MedicationRepository کوپل نشه.
-   *  اگه دارویی پیدا نشه (مثلاً کاملاً حذف شده)، همون occurrence فعلاً
-   *  prune نمی‌شه (نه خطا می‌ده، نه گمش می‌کنه) — می‌مونه برای دور بعد. */
-  pruneOlderThan(
-    thresholdInstant: Instant,
-    resolveMedication: (medicationId: string) => { name: string; form: MedicationForm; dose: string; familyMemberId: string } | undefined
-  ): DoseHistoryRecord[];
-}
+const RETENTION_DAYS = 120;
 
-const COLLECTION = 'dose_occurrences';
-const HISTORY_COLLECTION = 'dose_history_records';
-const TERMINAL_STATUSES: OccurrenceStatus[] = ['taken', 'skipped', 'missed', 'canceled'];
+export class DoseOccurrenceRepository {
+  constructor(private occurrences: DoseOccurrence[]) {}
 
-export class LocalStorageDoseOccurrenceRepository implements DoseOccurrenceRepository {
-  constructor(private readonly persistence: PersistenceAdapter) {}
-
-  private readAll(): DoseOccurrence[] {
-    return this.persistence.readAll<DoseOccurrence>(COLLECTION);
+  all(): DoseOccurrence[] {
+    return this.occurrences;
   }
 
-  private writeAll(items: DoseOccurrence[]): void {
-    this.persistence.writeAll(COLLECTION, items);
+  byId(id: string): DoseOccurrence | undefined {
+    return this.occurrences.find(o => o.id === id);
   }
 
-  upsertIfAbsent(occ: DoseOccurrence): 'created' | 'exists' {
-    const all = this.readAll();
-    const exists = all.some(
-      o => o.medicationId === occ.medicationId && o.slotId === occ.slotId && o.scheduledAt === occ.scheduledAt
-    );
-    if (exists) return 'exists';
-    this.writeAll([...all, occ]);
-    return 'created';
+  forMedication(medId: string): DoseOccurrence[] {
+    return this.occurrences.filter(o => o.medId === medId);
   }
 
-  getById(id: OccurrenceId): DoseOccurrence | null {
-    return this.readAll().find(o => o.id === id) ?? null;
+  /** تمام occurrenceهای هنوز pending — ورودی اصلی sweepMissed و
+   *  NotificationEngine.syncOccurrence (بخش ۴ و ۶). */
+  pending(): DoseOccurrence[] {
+    return this.occurrences.filter(o => o.status === 'pending');
   }
 
-  findPendingWithDeadlineBefore(now: Instant): DoseOccurrence[] {
-    return this.readAll().filter(o => o.status === 'pending' && o.deadlineAt < now);
+  byStatus(status: OccurrenceStatus): DoseOccurrence[] {
+    return this.occurrences.filter(o => o.status === status);
   }
 
-  findByMedication(medId: string, range?: { from: Instant; to: Instant }): DoseOccurrence[] {
-    return this.readAll().filter(
-      o => o.medicationId === medId && (!range || (o.scheduledAt >= range.from && o.scheduledAt <= range.to))
-    );
+  /** آخرین occurrence شناخته‌شده برای یک (medId, slotId) — برای اینکه
+   *  Occurrence Generator بداند از کجا به بعد باید افق را ادامه دهد. */
+  latestForSlot(medId: string, slotId: string): DoseOccurrence | undefined {
+    return this.occurrences
+      .filter(o => o.medId === medId && o.slotId === slotId)
+      .sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime())[0];
   }
 
-  findByDateRange(range: { from: Instant; to: Instant }): DoseOccurrence[] {
-    return this.readAll().filter(o => o.scheduledAt >= range.from && o.scheduledAt <= range.to);
+  /** کلید طبیعی idempotency (بخش ۳): همان (medId, slotId, scheduledAt) که
+   *  قبلاً ساخته شده دوباره ساخته نمی‌شود. */
+  existsForSlotAt(medId: string, slotId: string, scheduledAtISO: string): boolean {
+    return this.occurrences.some(o => o.medId === medId && o.slotId === slotId && o.scheduledAt === scheduledAtISO);
   }
 
-  update(occ: DoseOccurrence): void {
-    const all = this.readAll();
-    const idx = all.findIndex(o => o.id === occ.id);
-    if (idx < 0) {
-      console.error(`DoseOccurrenceRepository.update: occurrence با id="${occ.id}" پیدا نشد — نادیده گرفته شد.`);
-      return;
-    }
-    const next = [...all];
-    next[idx] = occ;
-    this.writeAll(next);
+  /** occurrenceهای یک بازه‌ی محلی مشخص (برای ReportsView — بخش ۱۶: بازه بر
+   *  اساس ClockAdapter محاسبه می‌شود، نه توسط این Repository؛ اینجا فقط
+   *  فیلتر instant است). */
+  inRange(startInstant: Date, endInstant: Date): DoseOccurrence[] {
+    const s = startInstant.getTime();
+    const e = endInstant.getTime();
+    return this.occurrences.filter(o => {
+      const t = new Date(o.scheduledAt).getTime();
+      return t >= s && t < e;
+    });
   }
 
-  pruneOlderThan(
-    thresholdInstant: Instant,
-    resolveMedication: (medicationId: string) => { name: string; form: MedicationForm; dose: string; familyMemberId: string } | undefined
-  ): DoseHistoryRecord[] {
-    const all = this.readAll();
-    const candidates = all.filter(o => TERMINAL_STATUSES.includes(o.status) && o.scheduledAt < thresholdInstant);
-    if (candidates.length === 0) return [];
-
-    const newHistoryRecords: DoseHistoryRecord[] = [];
-    const prunedIds = new Set<OccurrenceId>();
-
-    for (const occ of candidates) {
-      const med = resolveMedication(occ.medicationId);
-      if (!med) continue; // دارو پیدا نشد — این دور prune نمی‌شه، برای دور بعد می‌مونه
-
-      newHistoryRecords.push({
-        id: `hist_${occ.id}`,
-        occurrenceId: occ.id,
-        medicationId: occ.medicationId,
-        medName: med.name,
-        medForm: med.form,
-        medDose: med.dose,
-        slotId: occ.slotId,
-        scheduledAt: occ.scheduledAt,
-        resolvedAt: occ.resolvedAt,
-        status: occ.status,
-        statusReason: occ.statusReason as SkipReason | undefined,
-        familyMemberId: med.familyMemberId,
-        legacy: false
-      });
-      prunedIds.add(occ.id);
-    }
-
-    if (newHistoryRecords.length === 0) return [];
-
-    const remaining = all.filter(o => !prunedIds.has(o.id));
-    this.writeAll(remaining);
-
-    const existingHistory = this.persistence.readAll<DoseHistoryRecord>(HISTORY_COLLECTION);
-    this.persistence.writeAll(HISTORY_COLLECTION, [...existingHistory, ...newHistoryRecords]);
-
-    return newHistoryRecords;
+  /** استراتژی retention (بخش ۸ و ریسک «رشد نامحدود حجم occurrence» در بخش
+   *  ۱۵): occurrenceهای resolve‌شده‌ی قدیمی‌تر از RETENTION_DAYS حذف می‌شوند.
+   *  pending هرگز pruned نمی‌شود (حتی اگر گذشته باشد — باید توسط sweepMissed
+   *  رسیدگی شود، نه گم شود). */
+  pruneOld(now: Date): DoseOccurrence[] {
+    const cutoff = now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    return this.occurrences.filter(o => o.status === 'pending' || new Date(o.scheduledAt).getTime() >= cutoff);
   }
 }

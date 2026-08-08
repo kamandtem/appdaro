@@ -15,17 +15,15 @@ import {
 interface MedicationSkipSheetProps {
   open: boolean;
   medName: string;
-  /** هویت پایدار دوز؛ فرم دیگر medId/slotIndex را حدس نمی‌زند. */
-  occurrenceId: string;
   onClose: () => void;
   /** «تغییر زمان یادآور» — پنل ویرایش دارو مستقیماً روی بخش زمان مصرف باز می‌شود. */
-  onConfirmTiming: (occurrenceId: string, reason: SkipReason) => void;
+  onConfirmTiming: () => void;
   /** «دارو را از چرخه یادآوری خارج کن» */
-  onConfirmSideEffects: (occurrenceId: string, reason: SkipReason) => void;
+  onConfirmSideEffects: () => void;
   /** «خارج کردن از چرخه یادآوری» */
-  onConfirmDoctorAdvice: (occurrenceId: string, reason: SkipReason) => void;
+  onConfirmDoctorAdvice: () => void;
   /** «انتقال دارو به وضعیت در انتظار تهیه» */
-  onConfirmOutOfStock: (occurrenceId: string, reason: SkipReason) => void;
+  onConfirmOutOfStock: () => void;
 }
 
 const REASONS: { id: SkipReason; label: string; icon: React.ElementType }[] = [
@@ -42,7 +40,6 @@ const REASONS: { id: SkipReason; label: string; icon: React.ElementType }[] = [
 export const MedicationSkipSheet: React.FC<MedicationSkipSheetProps> = ({
   open,
   medName,
-  occurrenceId,
   onClose,
   onConfirmTiming,
   onConfirmSideEffects,
@@ -180,7 +177,7 @@ export const MedicationSkipSheet: React.FC<MedicationSkipSheetProps> = ({
                   </p>
                   <button
                     type="button"
-                    onClick={() => onConfirmTiming(occurrenceId, 'timing')}
+                    onClick={onConfirmTiming}
                     className="w-full py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 text-white rounded-2xl shadow-lg shadow-emerald-500/30 font-black text-sm hover:scale-[1.02] active:scale-95 transition-all"
                   >
                     تغییر زمان یادآور
@@ -195,7 +192,7 @@ export const MedicationSkipSheet: React.FC<MedicationSkipSheetProps> = ({
                   </p>
                   <button
                     type="button"
-                    onClick={() => onConfirmSideEffects(occurrenceId, 'side_effects')}
+                    onClick={onConfirmSideEffects}
                     className="w-full py-3.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/60 text-rose-600 dark:text-rose-300 rounded-2xl font-black text-sm hover:bg-rose-100 dark:hover:bg-rose-950 active:scale-95 transition-all"
                   >
                     دارو را از چرخه یادآوری خارج کن
@@ -210,7 +207,7 @@ export const MedicationSkipSheet: React.FC<MedicationSkipSheetProps> = ({
                   </p>
                   <button
                     type="button"
-                    onClick={() => onConfirmDoctorAdvice(occurrenceId, 'doctor_advice')}
+                    onClick={onConfirmDoctorAdvice}
                     className="w-full py-3.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/60 text-rose-600 dark:text-rose-300 rounded-2xl font-black text-sm hover:bg-rose-100 dark:hover:bg-rose-950 active:scale-95 transition-all"
                   >
                     خارج کردن از چرخه یادآوری
@@ -225,7 +222,7 @@ export const MedicationSkipSheet: React.FC<MedicationSkipSheetProps> = ({
                   </p>
                   <button
                     type="button"
-                    onClick={() => onConfirmOutOfStock(occurrenceId, 'out_of_stock')}
+                    onClick={onConfirmOutOfStock}
                     className="w-full py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 text-white rounded-2xl shadow-lg shadow-emerald-500/30 font-black text-sm hover:scale-[1.02] active:scale-95 transition-all"
                   >
                     انتقال دارو به وضعیت «در انتظار تهیه»

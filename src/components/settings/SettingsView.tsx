@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { X, Settings as SettingsIcon, Camera, User, Type, Check } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Settings as SettingsIcon, Camera, User, Type, Check, Bell, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 import { FontSize } from '../../types';
 import { resizeImageFile } from '../../utils/image';
+import { checkNotificationPermissionStatus, requestNotificationPermissions } from '../../services/notificationService';
+import { NotificationPermissionStatus } from '../../adapters/CapacitorNotificationAdapter';
 
 interface SettingsViewProps {
   onClose: () => void;
@@ -21,6 +23,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [name, setName] = useState(userName);
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(userAvatarUrl);
   const [selectedFontSize, setSelectedFontSize] = useState<FontSize>(fontSize);
+
+  // بخش تشخیص نوتیفیکیشن — تا کاربر مجبور نباشد منتظر رسیدن نوبت واقعی یک
+  // دارو بماند تا بفهمد نوتیفیکیشن روی گوشی‌اش اصلاً کار می‌کند یا نه، و اگر
+  // کار نمی‌کند، دقیقاً کدام مجوز مشکل دارد.
+  const [notifStatus, setNotifStatus] = useState<NotificationPermissionStatus | null>(null);
+  const [notifBusy, setNotifBusy] = useState(false);
+
+  useEffect(() => {
+    checkNotificationPermissionStatus().then(setNotifStatus).catch(() => {});
+  }, []);
+
+  const handleRequestPermissionAgain = async () => {
+    setNotifBusy(true);
+    try {
+      const status = await requestNotificationPermissions();
+      setNotifStatus(status);
+    } finally {
+      setNotifBusy(false);
+    }
+  };
 
   const fontOptions: { id: FontSize; label: string; sample: string }[] = [
     { id: 'small', label: 'کوچک', sample: 'text-xs' },
@@ -134,6 +156,64 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   {selectedFontSize === opt.id && <Check className="w-3.5 h-3.5" />}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Notification diagnostics */}
+          <div>
+            <label className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5">
+              <Bell className="w-4 h-4 text-teal-600" />
+              وضعیت نوتیفیکیشن
+            </label>
+            <div className="bg-white/70 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60 rounded-2xl p-4 space-y-3">
+              {notifStatus && (
+                <div className="space-y-1.5 text-xs sm:text-sm font-bold">
+                  <div className="flex items-center gap-2">
+                    {notifStatus.pluginAvailable ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                    )}
+                    <span className="text-slate-600 dark:text-slate-300">
+                      {notifStatus.pluginAvailable ? 'اپ نصب‌شده روی گوشی تشخیص داده شد' : 'در محیط وب/پیش‌نمایش هستی — نوتیفیکیشن روی این محیط کار نمی‌کند'}
+                    </span>
+                  </div>
+                  {notifStatus.pluginAvailable && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        {notifStatus.notificationsGranted ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                        )}
+                        <span className="text-slate-600 dark:text-slate-300">
+                          {notifStatus.notificationsGranted ? 'مجوز نوتیفیکیشن داده شده' : 'مجوز نوتیفیکیشن داده نشده'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {notifStatus.exactAlarmGranted ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                        )}
+                        <span className="text-slate-600 dark:text-slate-300">
+                          {notifStatus.exactAlarmGranted ? 'مجوز هشدار دقیق داده شده' : 'مجوز هشدار دقیق داده نشده (ممکنه نوتیفیکیشن دیر برسه)'}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleRequestPermissionAgain}
+                disabled={notifBusy}
+                className="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm hover:bg-slate-200 dark:hover:bg-slate-600 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {notifBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                درخواست مجدد مجوز
+              </button>
             </div>
           </div>
 

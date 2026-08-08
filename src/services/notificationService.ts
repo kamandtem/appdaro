@@ -5,8 +5,10 @@
 
 import { DoseOccurrence, Medication } from '../types';
 import { NotificationEngine, plannedNotificationsFor } from '../notification/NotificationEngine';
-import { notificationAdapter, NotificationPermissionStatus } from '../adapters/CapacitorNotificationAdapter';
+import { notificationAdapter, NotificationPermissionStatus, DOSE_ACTION_TAKEN, DOSE_ACTION_SNOOZE, DOSE_ACTION_SKIP } from '../adapters/CapacitorNotificationAdapter';
 import { clockAdapter } from '../adapters/ClockAdapter';
+
+export { DOSE_ACTION_TAKEN, DOSE_ACTION_SNOOZE, DOSE_ACTION_SKIP };
 
 const engine = new NotificationEngine(notificationAdapter);
 
@@ -19,13 +21,6 @@ export async function requestNotificationPermissions(): Promise<NotificationPerm
 
 export async function checkNotificationPermissionStatus(): Promise<NotificationPermissionStatus> {
   return notificationAdapter.checkPermissionStatus();
-}
-
-/** برای دکمه‌ی «تست نوتیفیکیشن» در تنظیمات — یک نوتیفیکیشن واقعی ۵ ثانیه‌ی
- *  دیگر روی گوشی زمان‌بندی می‌کند و نتیجه‌ی واقعی (موفق/شکست + پیام خطا) را
- *  برمی‌گرداند تا در UI نمایش داده شود. */
-export async function sendTestNotification(): Promise<{ ok: boolean; error?: string }> {
-  return engine.sendTestNotification();
 }
 
 /**
@@ -88,6 +83,6 @@ export async function cancelOccurrenceNotifications(occurrence: DoseOccurrence):
   return engine.cancelRemaining(occurrence);
 }
 
-export async function addNotificationTapListener(onTap: (occurrenceId: string, medId: string) => void): Promise<(() => void) | undefined> {
+export async function addNotificationTapListener(onTap: (occurrenceId: string, medId: string, actionId?: string) => void): Promise<(() => void) | undefined> {
   return engine.addTapListener(onTap);
 }
