@@ -83,6 +83,18 @@ export async function cancelOccurrenceNotifications(occurrence: DoseOccurrence):
   return engine.cancelRemaining(occurrence);
 }
 
-export async function addNotificationTapListener(onTap: (occurrenceId: string, medId: string, actionId?: string) => void): Promise<(() => void) | undefined> {
+/** تأییدیه‌ی آنی بعد از «بعداً» — بدون باز کردن اپ. */
+export async function sendSnoozeConfirmation(notifId: number, kind: string, occurrence: DoseOccurrence, med: Medication): Promise<void> {
+  return engine.flashSnoozeConfirmation(notifId, kind as any, occurrence, med);
+}
+
+/** پیام پیگیری بعد از «رد کردن» — لمسش اپ را روی پنل «چرا مصرف نکردید»ی همین نوبت باز می‌کند. */
+export async function sendSkipFollowupPrompt(occurrence: DoseOccurrence, med: Medication): Promise<void> {
+  return engine.sendSkipFollowupPrompt(occurrence, med);
+}
+
+export async function addNotificationTapListener(
+  onTap: (occurrenceId: string, medId: string, actionId: string | undefined, kind: string | undefined, notifId: number) => void
+): Promise<(() => void) | undefined> {
   return engine.addTapListener(onTap);
 }
