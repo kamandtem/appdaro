@@ -71,8 +71,10 @@ export interface NotificationAdapter {
   checkPermissionStatus(): Promise<NotificationPermissionStatus>;
   schedule(specs: ScheduledNotificationSpec[]): Promise<{ ok: boolean; error?: string }>;
   cancel(ids: number[]): Promise<void>;
-  /** actionId خالی/undefined یعنی خودِ نوتیفیکیشن لمس شده (نه یکی از سه دکمه). */
-  addTapListener(onTap: (extra: Record<string, unknown>, actionId?: string) => void): Promise<(() => void) | undefined>;
+  /** actionId خالی/undefined یعنی خودِ نوتیفیکیشن لمس شده (نه یکی از سه دکمه).
+   *  notifId شناسه‌ی همان نوتیفیکیشنی است که لمس/اقدام شده — برای این‌که
+   *  بشود دقیقاً همان را (نه یکی دیگر) با محتوای جدید به‌روزرسانی کرد. */
+  addTapListener(onTap: (extra: Record<string, unknown>, actionId: string | undefined, notifId: number) => void): Promise<(() => void) | undefined>;
 }
 
 export class CapacitorNotificationAdapter implements NotificationAdapter {
@@ -151,15 +153,17 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
 
     // سه دکمه‌ی «مصرف کردم»/«بعداً»/«رد کردم» روی خودِ نوتیفیکیشن — باید یک‌بار
     // register شود تا specهای schedule بعدی بتوانند actionTypeId را استفاده کنند.
+    // foreground:false (فقط iOS؛ روی اندروید این پلاگین از ابتدا بدون باز کردن
+    // اپ اجرا می‌شود) یعنی زدن هرکدام از این سه دکمه اپ را جلو نمی‌آورد.
     try {
       if (typeof LocalNotifications.registerActionTypes === 'function') {
         await withTimeout(LocalNotifications.registerActionTypes({
           types: [{
             id: DOSE_ACTION_TYPE_ID,
             actions: [
-              { id: DOSE_ACTION_TAKEN, title: 'مصرف کردم' },
-              { id: DOSE_ACTION_SNOOZE, title: 'بعداً' },
-              { id: DOSE_ACTION_SKIP, title: 'رد کردن', destructive: true }
+              { id: DOSE_ACTION_TAKEN, title: 'مصرف کردم', foreground: false },
+              { id: DOSE_ACTION_SNOOZE, title: 'بعداً', foreground: false },
+              { id: DOSE_ACTION_SKIP, title: 'رد کردن', destructive: true, foreground: false }
             ]
           }]
         }), 'registerActionTypes');
@@ -229,7 +233,7 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
     }
   }
 
-  async addTapListener(onTap: (extra: Record<string, unknown>, actionId?: string) => void): Promise<(() => void) | undefined> {
+  async addTapListener(onTap: (extra: Record<string, unknown>, actionId: string | undefined, notifId: number) => void): Promise<(() => void) | undefined> {
     if (!Capacitor.isNativePlatform()) return undefined;
     try {
       const handle = await LocalNotifications.addListener('localNotificationActionPerformed', (action: any) => {
@@ -241,7 +245,7 @@ export class CapacitorNotificationAdapter implements NotificationAdapter {
           const actionId = rawActionId === DOSE_ACTION_TAKEN || rawActionId === DOSE_ACTION_SNOOZE || rawActionId === DOSE_ACTION_SKIP
             ? rawActionId
             : undefined;
-          onTap(action.notification.extra, actionId);
+          onTap(action.notification.extra, actionId, action.notification.id);
         }
       });
       return () => handle.remove();
