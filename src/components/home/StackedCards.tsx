@@ -25,6 +25,11 @@ interface StackedCardsProps {
   onDismissGestureTutorial?: () => void;
   onSkipDose?: (occurrenceId: string, reason: SkipReason) => void;
   onRequestEditReminderTime?: (medId: string) => void;
+  /** با لمسِ نوتیفیکیشن پیگیریِ «چرا مصرف نکردید» (بدون باز کردن اپ) ست
+   *  می‌شود؛ اگر دارویش همین الان کارت جلویی باشد، پنل دلیل خودکار باز
+   *  می‌شود — دقیقاً همان پنلی که با دکمه‌ی «مصرف نکردم» باز می‌شد. */
+  autoOpenSkipReasonMedId?: string | null;
+  onConsumeAutoOpenSkipReason?: () => void;
 }
 
 const formIcon = (form: Medication['form']): React.ElementType => {
@@ -62,7 +67,9 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
   showGestureTutorial,
   onDismissGestureTutorial,
   onSkipDose,
-  onRequestEditReminderTime
+  onRequestEditReminderTime,
+  autoOpenSkipReasonMedId,
+  onConsumeAutoOpenSkipReason
 }) => {
   // بخش ۱۷.۵ — بدون setInterval شمارش‌معکوس: کارت فقط وقتی از یک پله‌ی
   // escalation به پله‌ی بعد رد می‌شویم رنگ عوض می‌کند، نه هر چند ثانیه. یک
@@ -134,6 +141,17 @@ export const StackedCards: React.FC<StackedCardsProps> = ({
   const activeDoseParts = activeMed ? splitDoseText(activeMed.dose) : { main: '', sub: undefined as string | undefined };
   const activeIsSnoozed = activeOccurrence ? activeOccurrence.snoozeCount > 0 : false;
   const activeStep = activeOccurrence ? queryService.escalationStep(activeOccurrence, activeMed) : 0;
+
+  // لمسِ نوتیفیکیشن پیگیریِ «چرا مصرف نکردید» — وقتی همون دارو الان کارت
+  // جلویی شده (بعد از این‌که priorityMedId بالاتر جلو آورده‌ش)، پنل دلیل را
+  // خودکار باز می‌کند؛ دقیقاً معادل زدن دستیِ «مصرف نکردم».
+  useEffect(() => {
+    if (autoOpenSkipReasonMedId && activeMed?.id === autoOpenSkipReasonMedId) {
+      setShowSkipSheet(true);
+      onConsumeAutoOpenSkipReason?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenSkipReasonMedId, activeMed?.id]);
 
   const activeDeadlineInfo = React.useMemo(() => {
     if (!activeOccurrence || !activeMed || isExemptFromDeadlineSystem(activeMed)) return null;
