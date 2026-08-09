@@ -15,7 +15,7 @@ import { InteractionsView } from './components/interactions/InteractionsView';
 import { PharmacyView } from './components/pharmacy/PharmacyView';
 import { MedicationCatalogEntry, INSTRUCTION_TAG_LABELS } from './data/medicationCatalog';
 import { SettingsView } from './components/settings/SettingsView';
-import { requestNotificationPermissions, syncOccurrenceNotifications, cancelOccurrenceNotifications, addNotificationTapListener, DOSE_ACTION_TAKEN, DOSE_ACTION_SNOOZE, DOSE_ACTION_SKIP } from './services/notificationService';
+import { requestNotificationPermissions, syncOccurrenceNotifications, cancelOccurrenceNotifications, addNotificationTapListener, sendSnoozeConfirmation, sendSkipFollowupPrompt, DOSE_ACTION_TAKEN, DOSE_ACTION_SNOOZE, DOSE_ACTION_SKIP } from './services/notificationService';
 import { clockAdapter } from './adapters/ClockAdapter';
 import { appLifecycleAdapter } from './adapters/AppLifecycleAdapter';
 import { OccurrenceGenerator, DEFAULT_HORIZON_DAYS } from './domain/occurrence/OccurrenceGenerator';
@@ -180,14 +180,18 @@ export default function App() {
   // Set when a reminder notification wants a specific medication's card pulled to
   // the front of the home stack.
   const [priorityMedId, setPriorityMedId] = useState<string | null>(null);
+  // با لمسِ نوتیفیکیشن پیگیریِ «چرا مصرف نکردید» (بدون زدن دکمه‌ای، فقط خودِ
+  // پیام) ست می‌شود؛ StackedCards با دیدن این مقدار پنل دلیل را مستقیماً برای
+  // همین دارو باز می‌کند، بدون این‌که کاربر دوباره دستی روی «مصرف نکردم» بزند.
+  const [pendingSkipReasonMedId, setPendingSkipReasonMedId] = useState<string | null>(null);
 
   // نگه‌داشتن آخرین نسخه‌ی هندلرهای «مصرف کردم»/«رد کردن» برای listener دکمه‌های
   // نوتیفیکیشن — چون این هندلرها هر رندر از نو ساخته می‌شوند و نباید effect
   // زیر (که فقط یک‌بار subscribe می‌شود) با هر رندر دوباره subscribe/unsubscribe
   // کند. مقدار ref هر رندر (نه در یک effect) به‌روز می‌شود تا همیشه تازه باشد.
   const notificationActionHandlersRef = useRef<{
-    updateStatus: (occurrenceId: string, status: 'taken' | 'snoozed') => void;
-    skipDose: (occurrenceId: string, reason: SkipReason) => void;
+    updateStatus: (occurrenceId: string, status: 'taken' | 'snoozed', snoozeCtx?: { kind: string; notifId: number }) => void;
+    skipDose: (occurrenceId: string, reason: SkipReason, sendFollowup?: boolean) => void;
   }>({ updateStatus: () => {}, skipDose: () => {} });
 
   // Ask for notification permission early — covers the real scheduled dose-time
@@ -209,22 +213,30 @@ export default function App() {
     let cleanup: (() => void) | undefined;
     let cancelled = false;
     (async () => {
-      const remove = await addNotificationTapListener((occurrenceId, medId, actionId) => {
+      const remove = await addNotificationTapListener((occurrenceId, medId, actionId, kind, notifId) => {
         // سه دکمه‌ی روی خودِ نوتیفیکیشن مستقیماً اعمال می‌شوند — بدون باز کردن
-        // اپ. لمس خودِ نوتیفیکیشن (بدون actionId) مثل قبل فقط کارت را جلو می‌آورد.
+        // اپ. لمس خودِ نوتیفیکیشن (بدون actionId) مثل قبل فقط کارت را جلو می‌آورد،
+        // مگر برای پیام پیگیریِ «چرا مصرف نکردید» که پنل دلیل را هم باز می‌کند.
         if (actionId === DOSE_ACTION_TAKEN && occurrenceId) {
           notificationActionHandlersRef.current.updateStatus(occurrenceId, 'taken');
           return;
         }
         if (actionId === DOSE_ACTION_SNOOZE && occurrenceId) {
-          notificationActionHandlersRef.current.updateStatus(occurrenceId, 'snoozed');
+          notificationActionHandlersRef.current.updateStatus(occurrenceId, 'snoozed', { kind: kind || 'main', notifId });
           return;
         }
         if (actionId === DOSE_ACTION_SKIP && occurrenceId) {
           // بدون بازکردن Bottom Sheet انتخاب دلیل — چون از داخل نوتیفیکیشن
           // امکان انتخاب نیست، دلیل پیش‌فرض «زمان مصرف مناسب نبود» ثبت می‌شود
-          // که (برخلاف بقیه‌ی دلایل) خودِ دارو را غیرفعال نمی‌کند.
-          notificationActionHandlersRef.current.skipDose(occurrenceId, 'timing');
+          // که (برخلاف بقیه‌ی دلایل) خودِ دارو را غیرفعال نمی‌کند؛ بلافاصله یک
+          // پیام پیگیری هم می‌رود تا در صورت تمایل، بعداً دلیل واقعی را با
+          // بازکردن اپ مشخص کند.
+          notificationActionHandlersRef.current.skipDose(occurrenceId, 'timing', true);
+          return;
+        }
+        if (kind === 'skip-reason-prompt') {
+          openReminderForMed(medId);
+          setPendingSkipReasonMedId(medId);
           return;
         }
         openReminderForMed(medId);
@@ -398,7 +410,7 @@ export default function App() {
   // DoseLog قدیمی هنوز موازی نوشته می‌شود، اما فقط برای سازگاری Header.tsx
   // (بخش ۱۳ - خارج از دامنه‌ی این مهاجرت)؛ ReportsView دیگر از آن نمی‌خواند
   // (فاز ۵ - پاک‌سازی).
-  const handleUpdateDoseStatus = (occurrenceId: string, status: 'taken' | 'snoozed') => {
+  const handleUpdateDoseStatus = (occurrenceId: string, status: 'taken' | 'snoozed', snoozeCtx?: { kind: string; notifId: number }) => {
     const occ = state.doseOccurrences.find(o => o.id === occurrenceId);
     const med = occ ? state.medications.find(m => m.id === occ.medId) : undefined;
     if (!occ || !med) return;
@@ -409,6 +421,12 @@ export default function App() {
         ...prev,
         doseOccurrences: prev.doseOccurrences.map(o => (o.id === updated.id ? updated : o))
       }));
+      // تأییدیه‌ی آنی «۱۵ دقیقه دیگر یادآوری می‌کنیم» / ... — فقط وقتی از
+      // خودِ نوتیفیکیشن native زده شده (kind/notifId موجود است)؛ دکمه‌ی
+      // «بعداً» داخل اپ (روی کارت خانه) چنین چیزی ندارد.
+      if (snoozeCtx) {
+        sendSnoozeConfirmation(snoozeCtx.notifId, snoozeCtx.kind, updated, med);
+      }
       return;
     }
 
@@ -500,7 +518,7 @@ export default function App() {
   // «تمام شده»، خودِ دارو هم از چرخه یادآوری خارج می‌شه (isActive: false) —
   // با pauseReason مخصوص همون دلیل، تا در لیست داروها «در انتظار تهیه» با
   // «غیرفعال»ِ معمولی قاطی نشه. برای «زمان مصرف مناسب نیست» دارو فعال می‌مونه.
-  const handleSkipDose = (occurrenceId: string, reason: SkipReason) => {
+  const handleSkipDose = (occurrenceId: string, reason: SkipReason, sendFollowup?: boolean) => {
     const occ = state.doseOccurrences.find(o => o.id === occurrenceId);
     const med = occ ? state.medications.find(m => m.id === occ.medId) : undefined;
     if (!occ || !med) return;
@@ -532,6 +550,10 @@ export default function App() {
         doseOccurrences: prev.doseOccurrences.map(o => (o.id === withCancelled.id ? withCancelled : o))
       }));
     });
+
+    if (sendFollowup) {
+      sendSkipFollowupPrompt(updated, med);
+    }
   };
 
   notificationActionHandlersRef.current.skipDose = handleSkipDose;
@@ -747,6 +769,8 @@ export default function App() {
             onDismissGestureTutorial={() => setState(prev => ({ ...prev, hasSeenCardGestureTutorial: true }))}
             onSkipDose={handleSkipDose}
             onRequestEditReminderTime={handleRequestEditReminderTime}
+            autoOpenSkipReasonMedId={pendingSkipReasonMedId}
+            onConsumeAutoOpenSkipReason={() => setPendingSkipReasonMedId(null)}
           />
         )}
 
