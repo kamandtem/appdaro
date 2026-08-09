@@ -49,7 +49,12 @@ function deadlineTimeLabel(deadlineAt: string): string {
 }
 
 function bodyFor(kind: ReminderKind | 'main', med: Medication, occurrence: DoseOccurrence): string {
-  if (kind === 'main') return `وقت مصرف ${med.name} فرا رسیده — ${med.dose}`;
+  // بدون خط‌فاصله قبل از مقدار دوز — روی خط جدا از عنوان نوشته می‌شود؛ چون
+  // متن نوتیفیکیشن native ساده است (بدون HTML/CSS)، امکان قاب‌گرد و رنگی
+  // دور خودِ رقم داخل نوتیفیکیشن واقعی سیستم‌عامل وجود ندارد — این نزدیک‌ترین
+  // جایگزین است. تراز و قاب گرد شیری‌رنگ برای «۱ عدد» در بخش‌های داخل اپ
+  // (کارت خانه، جزئیات دارو) که HTML واقعی رندر می‌شود همچنان اعمال می‌شود.
+  if (kind === 'main') return `وقت مصرف ${med.name} فرا رسیده\n${med.dose}`;
   if (kind === 'deadline') return `آخرین فرصت مصرف ${med.name} — پایان زمان مصرف: ${deadlineTimeLabel(occurrence.deadlineAt)}`;
   // نوبتی که یک‌بار «بعداً» زده شده — یادآور بعدی هم پایان زمان مصرف را نشان
   // می‌دهد تا کاربر بداند تا کِی فرصت دارد.
@@ -59,9 +64,38 @@ function bodyFor(kind: ReminderKind | 'main', med: Medication, occurrence: DoseO
   return `هنوز ${med.name} رو مصرف نکردی — ${med.dose}`;
 }
 
+/** رنگ هر پله از نشانِ ایموجی رنگی جلوی عنوان استفاده می‌کند — چون دکمه‌ها و
+ *  پس‌زمینه‌ی نوتیفیکیشن‌های native رنگ سفارشی/انیمیشن پشتیبانی نمی‌کنند
+ *  (نه در اندروید نه در iOS، این‌ها کاملاً دست سیستم‌عامل‌اند)؛ این نزدیک‌ترین
+ *  جایگزین واقعی برای «یادآور اول سبز / دوم زرد / آخر قرمز» است. */
 function titleFor(kind: ReminderKind | 'main'): string {
   if (kind === 'main') return '💊 یادآور داروتو';
-  return `💊 داروتو — ${REMINDER_LABEL[kind as ReminderKind]}`;
+  if (kind === 'r1') return `🟢 داروتو — ${REMINDER_LABEL.r1}`;
+  if (kind === 'r2') return `🟡 داروتو — ${REMINDER_LABEL.r2}`;
+  return `🔴 داروتو — ${REMINDER_LABEL.deadline}`;
+}
+
+function hm(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** متن «تأییدیه»ی آنی که بلافاصله بعد از زدن دکمه‌ی «بعداً» جای همان
+ *  نوتیفیکیشن را (با همان id) می‌گیرد — پله‌ی بعدی بر اساس kind همان
+ *  نوتیفیکیشنی است که «بعداً» رویش زده شده (main → r1 → r2 → deadline). */
+export function snoozeConfirmationFor(kind: ReminderKind | 'main', occurrence: DoseOccurrence): { title: string; body: string } {
+  const r2 = occurrence.reminderPlan.entries.find(e => e.kind === 'r2');
+  const deadline = occurrence.reminderPlan.entries.find(e => e.kind === 'deadline');
+  if (kind === 'main') {
+    return { title: '🟡 باشه، یادآوری می‌کنیم', body: '۱۵ دقیقه دیگر این نوبت را یادآوری می‌کنیم.' };
+  }
+  if (kind === 'r1') {
+    return { title: '⚪ باشه، یادآوری می‌کنیم', body: `این دارو را ساعت ${r2 ? hm(r2.at) : deadlineTimeLabel(occurrence.deadlineAt)} مجدد یادآوری می‌کنیم.` };
+  }
+  if (kind === 'r2') {
+    return { title: '🟡 توجه', body: `آخرین یادآوری ساعت ${deadline ? hm(deadline.at) : deadlineTimeLabel(occurrence.deadlineAt)} است.` };
+  }
+  return { title: '🔴 آخرین فرصت', body: 'این آخرین زمان ممکن برای مصرف این نوبت داروست؛ اگر هم‌اکنون دارو مصرف نمی‌کنید، تا نوبت بعدی صبر کنید.' };
 }
 
 export class NotificationEngine {
@@ -117,6 +151,40 @@ export class NotificationEngine {
     return { ...occurrence, notificationIds: [] };
   }
 
+  /** بلافاصله بعد از زدن دکمه‌ی «بعداً»، همان نوتیفیکیشن (همان id) را با متن
+   *  تأییدیه‌ی پله‌ی بعد جایگزین می‌کند — بدون باز کردن اپ. چون id عوض
+   *  نمی‌شود، سیستم‌عامل خودش انیمیشن جایگزینی محتوا را نشان می‌دهد (نزدیک‌ترین
+   *  معادل واقعی به «انیمیشن رنگی» که سیستم‌عامل به برنامه‌ها اجازه‌ی
+   *  سفارشی‌سازی‌اش را نمی‌دهد). بدون دکمه — چون صرفاً یک تأییدیه‌ی آنی است. */
+  async flashSnoozeConfirmation(notifId: number, kind: ReminderKind | 'main', occurrence: DoseOccurrence, med: Medication): Promise<void> {
+    const { title, body } = snoozeConfirmationFor(kind, occurrence);
+    await this.adapter.schedule([{
+      id: notifId,
+      title,
+      body,
+      at: new Date(),
+      extra: { occurrenceId: occurrence.id, medId: med.id, kind: 'snooze-confirmation' }
+    }]);
+  }
+
+  /** بعد از «رد کردن»، یک نوتیفیکیشن مجزا و بی‌صدا برای «چرا مصرف نکردی؟»
+   *  می‌فرستد. دلیل پیش‌فرض («زمان مصرف مناسب نبود») همان لحظه و بدون باز
+   *  شدن اپ ثبت شده؛ اما چون دلیل‌های دیگر (عوارض/توصیه پزشک/تمام‌شدن دارو)
+   *  خودِ دارو را کاملاً از چرخه یادآوری خارج می‌کنند — تصمیمی با اثر واقعی —
+   *  عمداً به‌جای دکمه‌های مستقیم روی خودِ این نوتیفیکیشن (که با یک لمس اشتباه
+   *  می‌توانست یک دارو را بی‌سروصدا غیرفعال کند)، لمسِ آن اپ را باز می‌کند و
+   *  دقیقاً همان پنل «چرا این دارو را مصرف نکردید» را برای همین نوبت باز
+   *  می‌کند تا انتخاب نهایی با تأیید آگاهانه‌ی خودِ کاربر ثبت شود. */
+  async sendSkipFollowupPrompt(occurrence: DoseOccurrence, med: Medication): Promise<void> {
+    await this.adapter.schedule([{
+      id: freshNotificationId(),
+      title: '❓ چرا این نوبت را مصرف نکردید؟',
+      body: `${med.name} به‌عنوان «مصرف‌نشده» ثبت شد. برای مشخص کردن دلیل دقیق (اختیاری) روی این پیام بزنید.`,
+      at: new Date(),
+      extra: { occurrenceId: occurrence.id, medId: med.id, kind: 'skip-reason-prompt' }
+    }]);
+  }
+
   async requestPermissions(): Promise<NotificationPermissionStatus> {
     return this.adapter.requestPermissions();
   }
@@ -134,11 +202,12 @@ export class NotificationEngine {
     }]);
   }
 
-  async addTapListener(onTap: (occurrenceId: string, medId: string, actionId?: string) => void): Promise<(() => void) | undefined> {
-    return this.adapter.addTapListener((extra, actionId) => {
+  async addTapListener(onTap: (occurrenceId: string, medId: string, actionId: string | undefined, kind: string | undefined, notifId: number) => void): Promise<(() => void) | undefined> {
+    return this.adapter.addTapListener((extra, actionId, notifId) => {
       const occurrenceId = extra.occurrenceId as string | undefined;
       const medId = extra.medId as string | undefined;
-      if (medId) onTap(occurrenceId || '', medId, actionId);
+      const kind = extra.kind as string | undefined;
+      if (medId) onTap(occurrenceId || '', medId, actionId, kind, notifId);
     });
   }
 }
